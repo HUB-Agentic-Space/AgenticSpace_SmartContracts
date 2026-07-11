@@ -1,3 +1,11 @@
+# Dependencies
+node_modules/
+
+# Hardhat artifacts
+artifacts/
+cache/
+typechain-types/
+
 # Remix compiler artifacts
 **/artifacts/
 **/artifacts/**
@@ -10,6 +18,28 @@ states/
 *.dbg.json
 *.tsbuildinfo
 
-# Optional
+# Foundry
+foundry-out/
+foundry-cache/
+
+# OpenZeppelin upgrade manifests
+deploy/*/openzeppelin/
+
+# Environment
 .env
 .env.local
+
+# Audit reports
+slither-report.json
+mythril-report.json
+echidna-corpus/
+coverage/
+coverage.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
