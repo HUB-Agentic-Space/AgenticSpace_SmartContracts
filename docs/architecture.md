@@ -1,3 +1,11 @@
+![header](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=200&section=header&text=Arquitetura%20dos%20Smart%20Contracts&fontSize=36&fontAlignY=35&animation=twinkling)
+
+![visitors](https://visitor-badge.laobi.icu/badge?page_id=RapportTecnologia.AgenticSpace.smartcontracts_architecture)
+[![License: CC BY-SA 4.0](https://img.shields.io/badge/License-CC_BY--SA_4.0-blue.svg)](https://creativecommons.org/licenses/by-sa/4.0/)
+![Language: Portuguese](https://img.shields.io/badge/Language-Portuguese-brightgreen.svg)
+![Status](https://img.shields.io/badge/Status-Ongoing-yellow)
+[![GitHub Issues](https://img.shields.io/github/issues/RapportTecnologia/AgenticSpace)](https://github.com/RapportTecnologia/AgenticSpace/issues)
+
 # Arquitetura dos Smart Contracts
 
 ## Padrões de Projeto
@@ -63,3 +71,5 @@ contracts/
 | Data | Versão | Descrição |
 |---|---|---|
 | 2025-07-11 | 0.1.0 | Documentação inicial: padrões de projeto, camadas, fluxo de identidade, segurança |
+
+![footer](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=100&section=footer&animation=twinkling)

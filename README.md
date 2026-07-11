@@ -1,4 +1,18 @@
+![header](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=200&section=header&text=Agentic%20Space%20-%20Smart%20Contracts&fontSize=40&fontAlignY=35&animation=twinkling)
+
 # Agentic Space — Smart Contracts
+
+![visitors](https://visitor-badge.laobi.icu/badge?page_id=RapportTecnologia.AgenticSpace.smartcontracts_README)
+[![License: CC BY-SA 4.0](https://img.shields.io/badge/License-CC_BY--SA_4.0-blue.svg)](https://creativecommons.org/licenses/by-sa/4.0/)
+![Language: Portuguese](https://img.shields.io/badge/Language-Portuguese-brightgreen.svg)
+![Status](https://img.shields.io/badge/Status-Ongoing-yellow)
+[![Solidity](https://img.shields.io/badge/Solidity-0.8.28-363636?logo=solidity&logoColor=white)](https://soliditylang.org/)
+[![Hardhat](https://img.shields.io/badge/Hardhat-2.22-FFF60C?logo=hardhat&logoColor=black)](https://hardhat.org/)
+[![Foundry](https://img.shields.io/badge/Foundry-1.0-FF8C00?logo=foundry&logoColor=black)](https://getfoundry.sh/)
+[![OpenZeppelin](https://img.shields.io/badge/OpenZeppelin-5.x-4E5FBA?logo=openzeppelin&logoColor=white)](https://openzeppelin.com/)
+[![Polygon](https://img.shields.io/badge/Polygon-PoS-8247E5?logo=polygon&logoColor=white)](https://polygon.technology/)
+[![GitHub stars](https://img.shields.io/github/stars/RapportTecnologia/AgenticSpace?style=social)](https://github.com/RapportTecnologia/AgenticSpace)
+[![GitHub Issues](https://img.shields.io/github/issues/RapportTecnologia/AgenticSpace)](https://github.com/RapportTecnologia/AgenticSpace/issues)
 
 ## Visão Geral
 
@@ -231,3 +245,5 @@ Documentação detalhada em [`docs/`](./docs/):
 ## Licença
 
 CC-BY-SA-4.0
+
+![footer](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=100&section=footer&animation=twinkling)

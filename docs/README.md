@@ -1,3 +1,11 @@
+![header](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=200&section=header&text=Smart%20Contracts%20-%20Documenta%C3%A7%C3%A3o&fontSize=36&fontAlignY=35&animation=twinkling)
+
+![visitors](https://visitor-badge.laobi.icu/badge?page_id=RapportTecnologia.AgenticSpace.smartcontracts_docs_README)
+[![License: CC BY-SA 4.0](https://img.shields.io/badge/License-CC_BY--SA_4.0-blue.svg)](https://creativecommons.org/licenses/by-sa/4.0/)
+![Language: Portuguese](https://img.shields.io/badge/Language-Portuguese-brightgreen.svg)
+![Status](https://img.shields.io/badge/Status-Ongoing-yellow)
+[![GitHub Issues](https://img.shields.io/github/issues/RapportTecnologia/AgenticSpace)](https://github.com/RapportTecnologia/AgenticSpace/issues)
+
 # Smart Contracts - Agentic Space
 
 ## Visão Geral
@@ -110,3 +118,5 @@ Backend e frontend consultam o `ContractRegistry` para descobrir endereços dina
 ## Licença
 
 CC-BY-SA-4.0
+
+![footer](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=100&section=footer&animation=twinkling)

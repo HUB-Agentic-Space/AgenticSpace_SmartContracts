@@ -1,3 +1,11 @@
+![header](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=200&section=header&text=AgentValidator&fontSize=36&fontAlignY=35&animation=twinkling)
+
+![visitors](https://visitor-badge.laobi.icu/badge?page_id=RapportTecnologia.AgenticSpace.smartcontracts_agent-validator)
+[![License: CC BY-SA 4.0](https://img.shields.io/badge/License-CC_BY--SA_4.0-blue.svg)](https://creativecommons.org/licenses/by-sa/4.0/)
+![Language: Portuguese](https://img.shields.io/badge/Language-Portuguese-brightgreen.svg)
+![Status](https://img.shields.io/badge/Status-Ongoing-yellow)
+[![GitHub Issues](https://img.shields.io/github/issues/RapportTecnologia/AgenticSpace)](https://github.com/RapportTecnologia/AgenticSpace/issues)
+
 # AgentValidator
 
 ## Propósito
@@ -73,3 +81,5 @@ Valida agentes registrando hashes de prompts na blockchain como únicos. Apenas 
 | Data | Versão | Descrição |
 |---|---|---|
 | 2025-07-11 | 0.1.0 | Documentação inicial: funções, estrutura, eventos, segurança |
+
+![footer](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=100&section=footer&animation=twinkling)
