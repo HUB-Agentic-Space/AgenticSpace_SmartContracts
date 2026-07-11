@@ -36,6 +36,8 @@ Os contratos são upgradeáveis (UUPS), com controle de acesso baseado em roles 
 | `IAgentRegistry` | Interface do AgentRegistry |
 | `IAgentValidator` | Interface do AgentValidator |
 | `IContractRegistry` | Interface do ContractRegistry |
+| `IDAO` | Interface base das DAOs (RoadMapDAO, AgentDAO) |
+| `IVotingStrategy` | Interface para estratégias de votação intercambiáveis |
 
 ## Estrutura de Diretórios
 
@@ -153,7 +155,20 @@ npm run deploy:amoy
 npm run deploy:polygon
 ```
 
-> **Nota**: Scripts de deploy 06 (CASToken) e 07 (InfrastructureFund) estão pendentes.
+> **Nota**: Scripts de deploy 06 (CASToken) e 07 (InfrastructureFund) estão pendentes. Atualmente apenas 5 contratos são deployados automaticamente (01-05). CASToken e InfrastructureFund precisam ser deployados manualmente.
+
+### Verificação no Polygonscan
+
+```bash
+# Listar contratos verificados na testnet
+npm run verify
+
+# Verificar contrato específico
+npx hardhat verify --network polygonAmoy <CONTRACT_ADDRESS> [constructor-args]
+
+# Utilitário de verificação
+npx hardhat run scripts/utils/verify_contracts.ts --network polygonAmoy
+```
 
 ## Auditoria
 
@@ -206,6 +221,12 @@ Documentação detalhada em [`docs/`](./docs/):
 - [`agent-dao.md`](docs/agent-dao.md) — AgentDAO
 - [`contract-registry.md`](docs/contract-registry.md) — ContractRegistry
 - [`audit-guide.md`](docs/audit-guide.md) — Guia de auditoria
+
+## Changelog
+
+| Data | Versão | Descrição |
+|---|---|---|
+| 2025-07-11 | 0.1.0 | Documentação inicial: contratos, arquitetura, deploy, auditoria |
 
 ## Licença
 
