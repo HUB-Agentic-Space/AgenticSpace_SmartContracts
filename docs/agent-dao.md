@@ -86,7 +86,7 @@ DAO customizada para agentes votarem de forma autônoma ou dirigida por humano. 
 
 - ReentrancyGuard
 - Pausable
-- UUPS upgradeável
+- UUPS adaptável
 - Apenas `AGENT_ROLE` pode votar (verificado via AgentRegistry)
 - `DAO_PROPOSER_ROLE` para criar propostas
 - `DAO_EXECUTOR_ROLE` para executar

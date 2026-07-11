@@ -14,7 +14,7 @@
 `ContractRegistry` é o ponto central para descoberta de endereços. Todos os contratos são registrados após deploy, permitindo que backend e frontend consultem endereços dinamicamente.
 
 ### Proxy (Transparent via UUPS)
-Todos os contratos core são upgradeáveis via OpenZeppelin UUPS. O admin autoriza upgrades através de `_authorizeUpgrade`.
+Todos os contratos core são adaptáveis via OpenZeppelin UUPS. O admin autoriza upgrades através de `_authorizeUpgrade`.
 
 ### Strategy (GoF)
 `IVotingStrategy` permite diferentes métodos de votação intercambiáveis nas DAOs (majoritária, quadrática, ponderada).

@@ -64,7 +64,7 @@ address v1 = ContractRegistry.getAddressByVersion("AgentRegistry", 1);
 ## Segurança
 
 - Pausable: pode ser pausado em emergência
-- UUPS: upgradeável com autorização do admin
+- UUPS: adaptável com autorização do admin
 - Validação: nome não vazio, endereço não zero, versão > 0
 - Apenas `REGISTRAR_ROLE` pode registrar/atualizar
 - `DEFAULT_ADMIN_ROLE` para pausar e autorizar upgrades

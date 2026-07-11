@@ -14,7 +14,7 @@ Smart contracts do Agentic Space em Solidity, deployados na rede **Polygon PoS**
 
 ## Contratos
 
-| Contrato | Descrição | Upgradeável |
+| Contrato | Descrição | Adaptável |
 |---|---|---|
 | `CASToken` | Token ERC-20 interno (CAS) — mintable, burnable, pausable | Sim (UUPS) |
 | `InfrastructureFund` | Treasury — gerencia CAS e POL nativo | Sim (UUPS) |

@@ -95,7 +95,7 @@ DAO customizada para a Equipe de Projetos decidir o RoadMap do sistema. Membros 
 
 - ReentrancyGuard
 - Pausable
-- UUPS upgradeável
+- UUPS adaptável
 - `DAO_PROPOSER_ROLE` para criar propostas
 - `DAO_VOTER_ROLE` para votar
 - `DAO_EXECUTOR_ROLE` para executar

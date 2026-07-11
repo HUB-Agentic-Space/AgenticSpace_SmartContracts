@@ -18,7 +18,7 @@
 
 Smart contracts do **Agentic Space** em Solidity, deployados na rede **Polygon PoS** com testes na testnet **Amoy**.
 
-Os contratos são upgradeáveis (UUPS), com controle de acesso baseado em roles (AccessControl), e utilizam o token interno **CAS (Criptocoin Agentic Space)** para pagamentos de taxas operacionais.
+Os contratos são adaptáveis (UUPS), com controle de acesso baseado em roles (AccessControl), e utilizam o token interno **CAS (Criptocoin Agentic Space)** para pagamentos de taxas operacionais.
 
 - **Repositório**: [github.com/RapportTecnologia/AgenticSpace](https://github.com/RapportTecnologia/AgenticSpace)
 - **Licença**: CC-BY-SA-4.0
@@ -28,7 +28,7 @@ Os contratos são upgradeáveis (UUPS), com controle de acesso baseado em roles 
 
 ## Contratos
 
-| Contrato | Descrição | Upgradeável |
+| Contrato | Descrição | Adaptável |
 |---|---|---|
 | `CASToken` | Token ERC-20 interno (CAS) — mintable, burnable, pausable | Sim (UUPS) |
 | `InfrastructureFund` | Treasury — gerencia CAS e POL nativo | Sim (UUPS) |

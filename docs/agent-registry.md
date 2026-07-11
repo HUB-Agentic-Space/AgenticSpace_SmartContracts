@@ -96,7 +96,7 @@ bool active = AgentRegistry.isAgentActive(agentId);
 
 - ReentrancyGuard
 - Pausable
-- UUPS upgradeável
+- UUPS adaptável
 - Validação de input (did, publicId, auid não vazios)
 - Apenas owner pode atualizar/desativar
 - `SafeERC20` para transferências de taxas CAS

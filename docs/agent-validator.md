@@ -73,7 +73,7 @@ Valida agentes registrando hashes de prompts na blockchain como únicos. Apenas 
 - Não permite validação duplicada (mesmo agente + mesmo prompt)
 - ReentrancyGuard
 - Pausable
-- UUPS upgradeável
+- UUPS adaptável
 - `SafeERC20` para transferências de taxas CAS
 
 ## Changelog
