@@ -1,4 +1,11 @@
-![header](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=200&section=header&text=AgentRegistry&fontSize=36&fontAlignY=35&animation=twinkling)
+---
+tags:
+  - smartcontracts
+  - facet
+  - agent-registry
+---
+
+![header](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=200&section=header&text=AgentRegistryFacet&fontSize=36&fontAlignY=35&animation=twinkling)
 
 ![visitors](https://visitor-badge.laobi.icu/badge?page_id=RapportTecnologia.AgenticSpace.smartcontracts_agent-registry)
 [![License: CC BY-SA 4.0](https://img.shields.io/badge/License-CC_BY--SA_4.0-blue.svg)](https://creativecommons.org/licenses/by-sa/4.0/)
@@ -6,105 +13,161 @@
 ![Status](https://img.shields.io/badge/Status-Ongoing-yellow)
 [![GitHub Issues](https://img.shields.io/github/issues/RapportTecnologia/AgenticSpace)](https://github.com/RapportTecnologia/AgenticSpace/issues)
 
-# AgentRegistry
+# AgentRegistryFacet
 
-## Propósito
+**Caminho:** `contracts/facets/AgentRegistryFacet.sol`
 
-Registro único de agentes na blockchain. Cada agente é identificado por `agentId = keccak256(did, ownerAddress)`, vinculando o DID do usuário ao endereço da carteira.
+Facet responsável pelo registro único de agentes no Diamond. Cada agente é identificado por um `agentId` único, calculado a partir do hash do DID do usuário e do endereço do owner.
+
+## Visão Geral
+
+- Armazena apenas hashes na blockchain — o DID original nunca é persistido on-chain
+- `agentId = keccak256(didHash, ownerAddress)` via `AgentHashLib.computeAgentId()`
+- Suporta Merkle roots para verificação de prompts off-chain
+- Requer que o usuário esteja registrado e ativo no `UserRegistryFacet`
+- Requer pagamento de taxa CAS via `PaymentLib`
+- Usa `AgentStorage` como namespace de Diamond Storage
+
+## Estrutura de Dados
+
+Ver [[storage-namespaces#AgentStorage]] para detalhes completos.
 
 ## Funções
 
-### registerAgent(string did, string publicId, string auid)
-- **Auth:** Pública (qualquer endereço pode registrar seus agentes)
-- Calcula `agentId = keccak256(did, msg.sender)`
-- Verifica unicidade do `agentId` e do `publicId`
-- Concede `AGENT_ROLE` ao `msg.sender`
-- Emite `AgentRegistered`
+### Registro
 
-### updateAgent(bytes32 agentId, string publicId)
-- **Auth:** Apenas o owner do agente
-- Atualiza o `publicId` (verifica unicidade)
-- Emite `AgentUpdated`
+```solidity
+function registerAgent(
+    bytes32 didHash,
+    string calldata publicId,
+    string calldata auid,
+    string calldata name,
+    string calldata description,
+    string calldata parentPublicId,
+    bytes32 merkleRoot,
+    uint256 promptCount
+) external whenNotPaused
+```
 
-### deactivateAgent(bytes32 agentId)
-- **Auth:** Owner do agente ou admin
-- Marca `isActive = false`
-- Revoga `AGENT_ROLE` se não houver mais agentes ativos
-- Emite `AgentDeactivated`
+Registra um novo agente.
 
-### reactivateAgent(bytes32 agentId)
-- **Auth:** Owner do agente ou admin
-- Marca `isActive = true`
-- Reconcede `AGENT_ROLE`
-- Emite `AgentReactivated`
+**Pré-requisitos:**
+- Usuário do `msg.sender` deve estar registrado e ativo no `UserRegistryFacet`
+- `didHash != bytes32(0)`
+- `publicId` deve ser único
+- `msg.sender` deve ter aprovado o CASToken para o Diamond (fee)
 
-### getAgent(bytes32 agentId) → Agent
-- Retorna todos os dados do agente
+**Processamento:**
+1. Calcula `userId` e verifica se usuário está ativo
+2. Calcula `agentId = keccak256(didHash, msg.sender)`
+3. Verifica que `agentId` não existe
+4. Processa taxa CAS via `PaymentLib.processFeePayment(msg.sender, FEE_TYPE_REGISTRATION)`
+5. Cria o `Agent` no storage
+6. Concede `AGENT_ROLE` ao `msg.sender`
+7. Emite `AgentRegistered`
 
-### computeAgentId(string did, address ownerAddress) → bytes32
-- Função pure que calcula o agentId determinístico
+### Atualização
 
-### isAgentActive(bytes32 agentId) → bool
-- Verifica se o agente está ativo
+```solidity
+function updateAgent(
+    bytes32 agentId,
+    string calldata name,
+    string calldata description
+) external whenNotPaused
+```
 
-### getAgentsByOwner(address ownerAddress) → bytes32[]
-- Lista todos os agentes de um usuário
+Atualiza nome e descrição. Apenas o owner do agente pode chamar.
 
-## Estrutura Agent
+### Atualização de Merkle Root
 
-| Campo | Tipo | Descrição |
+```solidity
+function updateMerkleRoot(
+    bytes32 agentId,
+    bytes32 newRoot,
+    uint256 promptCount
+) external whenNotPaused
+```
+
+Atualiza o Merkle root dos prompts do agente. O root anterior é preservado no `merkleRootHistory`.
+
+- Apenas o owner do agente pode chamar
+- Emite `MerkleRootUpdated(agentId, oldRoot, newRoot)`
+
+### Verificação de Prompt
+
+```solidity
+function verifyPrompt(
+    bytes32 agentId,
+    bytes32 leaf,
+    bytes32[] calldata proof
+) external view returns (bool)
+```
+
+Verifica se um `leaf` (hash de prompt com metadata) pertence ao Merkle root atual do agente, usando `MerkleLib.verify()`.
+
+### Desativação / Reativação
+
+```solidity
+function deactivateAgent(bytes32 agentId) external whenNotPaused
+function reactivateAgent(bytes32 agentId) external whenNotPaused
+```
+
+- `deactivateAgent`: marca `isActive = false`, revoga `AGENT_ROLE`
+- `reactivateAgent`: marca `isActive = true`, concede `AGENT_ROLE`
+- Apenas o owner do agente pode chamar
+
+### Consultas
+
+| Função | Retorno | Descrição |
 |---|---|---|
-| agentId | bytes32 | ID único (hash de did + owner) |
-| did | string | DID do usuário |
-| ownerAddress | address | Carteira do usuário |
-| publicId | string | ID público do agente |
-| auid | string | Agent Unique ID (UUID) |
-| isActive | bool | Status ativo/inativo |
-| registeredAt | uint256 | Timestamp do registro |
+| `getAgent(bytes32 agentId)` | `(Agent)` | Retorna dados completos |
+| `getAgentByPublicId(string publicId)` | `(Agent)` | Busca por publicId |
+| `getAgentsByOwner(address owner)` | `bytes32[]` | Lista de agentIds |
+| `isAgentActive(bytes32 agentId)` | `bool` | Verifica se ativo |
+| `getAgentCount()` | `uint256` | Total de agentes |
+| `getActiveAgentCount()` | `uint256` | Total ativos |
+| `getMerkleRootHistory(bytes32 agentId)` | `bytes32[]` | Histórico de roots |
 
-## Eventos
+## Events
 
-- `AgentRegistered(agentId, did, ownerAddress, publicId, auid)`
-- `AgentUpdated(agentId, publicId)`
-- `AgentDeactivated(agentId, ownerAddress)`
-- `AgentReactivated(agentId, ownerAddress)`
+- `AgentRegistered(bytes32 indexed agentId, bytes32 indexed didHash, address indexed owner, string publicId, string auid, bytes32 merkleRoot)`
+- `AgentUpdated(bytes32 indexed agentId, string name, string description)`
+- `AgentDeactivated(bytes32 indexed agentId, address indexed by)`
+- `AgentReactivated(bytes32 indexed agentId, address indexed by)`
+- `MerkleRootUpdated(bytes32 indexed agentId, bytes32 oldRoot, bytes32 newRoot)`
 
 ## Taxas CAS
 
-| Operação | Taxa (CAS) |
-|---|---|
-| Registro de Agente | 100 CAS |
-| Registro de Usuário | 30 CAS |
+| Operação | Fee Type | Taxa Padrão |
+|---|---|---|
+| `registerAgent` | `FEE_TYPE_REGISTRATION` (0) | 100 CAS |
+| `updateMerkleRoot` | — | Grátis (apenas owner) |
 
-> As taxas podem ser ajustadas pelo admin via `updateFees()`. O pagamento é processado via `PaymentLib` e direcionado ao `InfrastructureFund`.
+> [!warning] Aprovação prévia
+> O pagador deve aprovar o CASToken para o Diamond antes de chamar `registerAgent`. Use `CASToken.approve(diamondAddress, fee)`.
 
-## Uso
+## Dependências
 
-```solidity
-// Registrar um agente (requer aprovação prévia do CAS token)
-CASToken.approve(address(AgentRegistry), 100 * 1e18);
-AgentRegistry.registerAgent("did:web:alice", "alice-public-id", "uuid-alice");
-
-// Consultar agente
-Agent memory agent = AgentRegistry.getAgent(agentId);
-
-// Verificar se ativo
-bool active = AgentRegistry.isAgentActive(agentId);
-```
+- [[user-registry]] — `UserRegistryFacet` (verifica usuário ativo)
+- [[payment-facet]] — `PaymentLib` (processa taxa CAS)
+- [[libs]] — `AgentHashLib`, `MerkleLib`
+- [[access-control]] — `DiamondAccessControl` (concede `AGENT_ROLE`)
+- [[storage-namespaces]] — `AgentStorage`
 
 ## Segurança
 
-- ReentrancyGuard
-- Pausable
-- UUPS adaptável
-- Validação de input (did, publicId, auid não vazios)
-- Apenas owner pode atualizar/desativar
-- `SafeERC20` para transferências de taxas CAS
+- `whenNotPaused` em todas as funções de mutação
+- Validação de usuário ativo antes do registro
+- Prevenção de registro duplicado (agentId único)
+- Verificação de ownership em update, deactivate, reactivate
+- Merkle proof verification via `MerkleLib.verify()`
+- Taxa CAS obrigatória em `registerAgent`
 
 ## Changelog
 
 | Data | Versão | Descrição |
 |---|---|---|
-| 2025-07-11 | 0.1.0 | Documentação inicial: funções, estrutura, eventos, segurança |
+| 2025-07-12 | 0.2.0 | Reescrita completa: facet com Merkle roots, UserRegistry, PaymentLib |
+| 2025-07-11 | 0.1.0 | Documentação inicial do AgentRegistry standalone |
 
 ![footer](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=100&section=footer&animation=twinkling)

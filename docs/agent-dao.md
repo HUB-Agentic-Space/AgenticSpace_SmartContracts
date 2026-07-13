@@ -1,4 +1,12 @@
-![header](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=200&section=header&text=AgentDAO&fontSize=36&fontAlignY=35&animation=twinkling)
+---
+tags:
+  - smartcontracts
+  - facet
+  - dao
+  - agent-dao
+---
+
+![header](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=200&section=header&text=AgentDAOFacet&fontSize=36&fontAlignY=35&animation=twinkling)
 
 ![visitors](https://visitor-badge.laobi.icu/badge?page_id=RapportTecnologia.AgenticSpace.smartcontracts_agent-dao)
 [![License: CC BY-SA 4.0](https://img.shields.io/badge/License-CC_BY--SA_4.0-blue.svg)](https://creativecommons.org/licenses/by-sa/4.0/)
@@ -6,11 +14,19 @@
 ![Status](https://img.shields.io/badge/Status-Ongoing-yellow)
 [![GitHub Issues](https://img.shields.io/github/issues/RapportTecnologia/AgenticSpace)](https://github.com/RapportTecnologia/AgenticSpace/issues)
 
-# AgentDAO
+# AgentDAOFacet
 
-## Propósito
+**Caminho:** `contracts/facets/AgentDAOFacet.sol`
 
-DAO customizada para agentes votarem de forma autônoma ou dirigida por humano. Apenas agentes registrados no `AgentRegistry` podem votar.
+Facet de governança para agentes votarem de forma autônoma ou dirigida por humano. Apenas agentes registrados e ativos no `AgentRegistryFacet` podem votar.
+
+## Visão Geral
+
+- Usa `DAOStorage` com namespace `AGENT_DAO = keccak256("AgentDAO")`
+- Suporta delegação de voto entre agentes
+- Propostas com lifecycle completo: criação → votação → timelock → execução
+- Requer pagamento de taxa CAS para criar propostas
+- Parâmetros configuráveis via `DAO_ADMIN_ROLE`
 
 ## Tipos de Proposta
 
@@ -21,84 +37,158 @@ DAO customizada para agentes votarem de forma autônoma ou dirigida por humano. 
 | 2 | GovernanceChange |
 | 3 | AgentPolicy |
 
-## Diferenciais
-
-- **Votação por agentes:** Apenas endereços com `AGENT_ROLE` podem votar
-- **Delegação:** Agentes podem delegar seu voto em outro agente
-- **Integração:** Conecta com `AgentRegistry` e `AgentValidator`
-
 ## Funções
 
-### createProposal(uint8 proposalType, string title, string description, bytes data) → uint256
-- **Auth:** `DAO_PROPOSER_ROLE`
+### Inicialização
 
-### castVote(uint256 proposalId, uint8 support)
-- **Auth:** Qualquer agente com `AGENT_ROLE`
-- Se o votante delegou seu voto, o delegado vota em seu lugar
+```solidity
+function initAgentDAO() external
+```
+
+Configura parâmetros padrão (quorum, duração, timelock, limites). Chamada uma única vez durante o deploy.
+
+### Criar Proposta
+
+```solidity
+function createProposal(
+    uint8 proposalType,
+    string calldata title,
+    string calldata description,
+    bytes calldata data
+) external whenNotPaused returns (uint256 proposalId)
+```
+
+- **Auth:** `AGENT_ROLE`
+- Respeita `proposalCooldown` entre propostas do mesmo proponente
+- Respeita `maxActiveProposals` simultâneas
+- Processa taxa CAS via `PaymentLib.processFeePayment(msg.sender, FEE_TYPE_DAO_PROPOSAL)`
+- Emite `ProposalCreated`
+
+### Votar
+
+```solidity
+function castVote(uint256 proposalId, uint8 support) external whenNotPaused
+```
+
+- **Auth:** `AGENT_ROLE`
 - Voto: 0=Against, 1=For, 2=Abstain
+- Se o votante delegou seu voto, o delegado vota em seu lugar
+- Um voto por endereço por proposta
+- Emite `VoteCast`
 
-### delegateVote(address delegatee)
-- Delega voto para outro agente
-- Não permite auto-delegação
-- Não permite delegação dupla
+### Delegação
 
-### revokeDelegation()
-- Revoca delegação ativa
+```solidity
+function delegateVote(address delegatee) external whenNotPaused
+function revokeDelegation() external whenNotPaused
+```
 
-### cancelProposal(uint256 proposalId)
-- **Auth:** `DAO_CANCELLER_ROLE`
+- `delegateVote`: delega voto para outro agente com `AGENT_ROLE`
+- Não permite auto-delegação nem delegação dupla
+- `revokeDelegation`: revoga delegação ativa
+- Emite `VoteDelegated` / `VoteDelegationRevoked`
 
-### queueProposal / executeProposal
-- **Auth:** `DAO_EXECUTOR_ROLE`
-- Mesmo fluxo do RoadMapDAO (timelock + execution window)
+### Cancelar
+
+```solidity
+function cancelProposal(uint256 proposalId) external onlyRole(DAO_ADMIN_ROLE) whenNotPaused
+```
+
+Cancela proposta ativa ou pendente. Emite `ProposalCanceled`.
+
+### Queue / Execute
+
+```solidity
+function queueProposal(uint256 proposalId) external onlyRole(DAO_ADMIN_ROLE) whenNotPaused
+function executeProposal(uint256 proposalId) external onlyRole(DAO_ADMIN_ROLE) whenNotPaused returns (bytes memory)
+```
+
+- `queueProposal`: coloca proposta aprovada em fila (timelock)
+- `executeProposal`: executa após timelock
+- Janela de execução: 7 dias após o timelock
+
+### Configuração (Admin)
+
+```solidity
+function setQuorum(uint256 quorumBps) external onlyRole(DAO_ADMIN_ROLE)
+function setVotingDuration(uint256 duration) external onlyRole(DAO_ADMIN_ROLE)
+function setTimelockDelay(uint256 delay) external onlyRole(DAO_ADMIN_ROLE)
+function setMaxActiveProposals(uint256 max) external onlyRole(DAO_ADMIN_ROLE)
+function setProposalCooldown(uint256 cooldown) external onlyRole(DAO_ADMIN_ROLE)
+```
+
+### Consultas
+
+| Função | Retorno | Descrição |
+|---|---|---|
+| `getProposal(uint256 proposalId)` | `(Proposal)` | Retorna dados da proposta |
+| `getProposalState(uint256 proposalId)` | `ProposalState` | Estado atual |
+| `getProposalCount()` | `uint256` | Total de propostas |
+| `getActiveProposalCount()` | `uint256` | Propostas ativas |
+| `hasVoted(uint256 proposalId, address voter)` | `bool` | Verifica se votou |
+| `getDelegation(address delegator)` | `address` | Retorna delegado |
 
 ## Parâmetros Padrão
 
 | Parâmetro | Valor |
 |---|---|
-| quorumBps | 500 (5%) |
-| votingDuration | 5 dias |
-| timelockDelay | 3 dias |
-| maxActiveProposals | 50 |
-| proposalCooldown | 2 dias |
+| `quorumBps` | 500 (5%) |
+| `votingDuration` | 5 dias |
+| `timelockDelay` | 3 dias |
+| `maxActiveProposals` | 50 |
+| `proposalCooldown` | 2 dias |
 
-## Eventos Adicionais
+## Estados de Proposta
 
-- `VoteDelegated(delegator, delegatee)`
-- `VoteDelegationRevoked(delegator)`
+`Pending → Active → Succeeded → Queued → Executed`
+`Active → Defeated` (se quorum não atingido)
+`Active/Pending → Canceled`
+`Queued → Expired` (se não executado em 7 dias)
+
+## Events
+
+- `ProposalCreated(uint256 proposalId, uint8 proposalType, string title, address proposer)`
+- `VoteCast(uint256 proposalId, address voter, uint8 support)`
+- `ProposalCanceled(uint256 proposalId)`
+- `ProposalQueued(uint256 proposalId, uint256 eta)`
+- `ProposalExecuted(uint256 proposalId)`
+- `ProposalExpired(uint256 proposalId)`
+- `VoteDelegated(address delegator, address delegatee)`
+- `VoteDelegationRevoked(address delegator)`
 
 ## Taxas CAS
 
-| Operação | Taxa (CAS) |
-|---|---|
-| Criar Proposta | 200 CAS |
-| Votar em Proposta | 10 CAS |
+| Operação | Fee Type | Taxa Padrão |
+|---|---|---|
+| `createProposal` | `FEE_TYPE_DAO_PROPOSAL` (2) | 50 CAS |
+| `castVote` | — | Grátis |
 
-> As taxas podem ser ajustadas pelo admin via `updateFees()`. O pagamento é processado via `PaymentLib` e direcionado ao `InfrastructureFund`.
+> [!warning] Aprovação prévia
+> O pagador deve aprovar o CASToken para o Diamond antes de chamar `createProposal`.
 
-## Integração
+## Dependências
 
-- `setAgentRegistry(address)`: atualiza endereço do AgentRegistry
-- `setAgentValidator(address)`: atualiza endereço do AgentValidator
-- Verificação de elegibilidade via `AGENT_ROLE` (concedido pelo AgentRegistry)
+- [[agent-registry]] — `AgentRegistryFacet` (verifica `AGENT_ROLE`)
+- [[payment-facet]] — `PaymentLib` (processa taxa CAS)
+- [[libs]] — `VotingLib` (quorum, aprovação)
+- [[access-control]] — `DiamondAccessControl` (`AGENT_ROLE`, `DAO_ADMIN_ROLE`)
+- [[storage-namespaces]] — `DAOStorage` (namespace `AGENT_DAO`)
 
 ## Segurança
 
-- ReentrancyGuard
-- Pausable
-- UUPS adaptável
-- Apenas `AGENT_ROLE` pode votar (verificado via AgentRegistry)
-- `DAO_PROPOSER_ROLE` para criar propostas
-- `DAO_EXECUTOR_ROLE` para executar
-- `DAO_CANCELLER_ROLE` para cancelar
+- `whenNotPaused` em todas as funções de mutação
+- Apenas `AGENT_ROLE` pode criar propostas e votar
+- `DAO_ADMIN_ROLE` para cancelar, queue, execute e configurar
 - Timelock entre aprovação e execução
 - Não permite auto-delegação nem delegação dupla
-- `SafeERC20` para transferências de taxas CAS
+- Cooldown entre propostas do mesmo proponente
+- Limite de propostas ativas simultâneas
 
 ## Changelog
 
 | Data | Versão | Descrição |
 |---|---|---|
-| 2025-07-11 | 0.1.0 | Documentação inicial: funções, delegação, parâmetros, taxas, segurança |
+| 2025-07-12 | 0.2.0 | Reescrita completa: facet com DAOStorage, delegação, PaymentLib |
+| 2025-07-11 | 0.1.0 | Documentação inicial do AgentDAO standalone |
 
 ![footer](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=100&section=footer&animation=twinkling)
