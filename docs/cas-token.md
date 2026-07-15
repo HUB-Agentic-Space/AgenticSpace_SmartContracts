@@ -26,17 +26,20 @@ Token ERC-20 interno do Agentic Space (CAS — Criptocoin Agentic Space). Usado 
 - **Símbolo:** CAS
 - **Nome:** Criptocoin Agentic Space
 - **Fornecimento inicial:** 1.000.000 CAS (configurável no deploy)
-- **Mintable:** Apenas `MINTER_ROLE`
+- **Fornecimento máximo (MAX_SUPPLY):** 10.000.000 CAS (imutável)
+- **Mintable:** Apenas `MINTER_ROLE` (respeita MAX_SUPPLY)
 - **Burnable:** Qualquer holder pode queimar seus próprios tokens
 - **Pausable:** `PAUSER_ROLE` pode pausar todas as transferências
+- **Disclaimer on-chain:** String pública sobre investimento em infraestrutura
 
 ## Roles
 
 | Role | Descrição |
 |---|---|
 | `DEFAULT_ADMIN_ROLE` | Gerencia roles e autoriza upgrades |
-| `MINTER_ROLE` | Pode cunhar novos tokens |
+| `MINTER_ROLE` | Pode cunhar novos tokens (respeita MAX_SUPPLY) |
 | `PAUSER_ROLE` | Pode pausar/despausar |
+| `RATIO_ADMIN_ROLE` | Pode ajustar a ratio do CASSwap (CAS↔POL) |
 
 ## Funções
 
@@ -79,11 +82,28 @@ function unpause() external onlyRole(PAUSER_ROLE)
 
 Quando pausado, todas as transferências (`_update`) revertem com `EnforcedPause()`.
 
+### MAX_SUPPLY
+
+```solidity
+uint256 public constant MAX_SUPPLY = 10_000_000 * 1e18;
+```
+
+O fornecimento máximo é imutável e fixado em 10 milhões de CAS. O `mint` reverte com `MaxSupplyExceeded` se `totalSupply + amount > MAX_SUPPLY`. O `initialize` reverte com `MaxSupplyExceeded` se `initialSupply > MAX_SUPPLY`.
+
+### Disclaimer
+
+```solidity
+function disclaimer() public pure returns (string memory)
+```
+
+Retorna um disclaimer on-chain informando que o CAS representa investimento na infraestrutura do Agentic Space, com pareamento inicial 1:1 com POL sujeito a ajustes.
+
 ### Consultas
 
 ```solidity
 function decimals() public pure override returns (uint8) // retorna 18
 function isMinter(address account) external view returns (bool)
+function MAX_SUPPLY() public view returns (uint256) // 10.000.000 CAS
 ```
 
 ### Upgrade
@@ -98,6 +118,7 @@ Apenas `DEFAULT_ADMIN_ROLE` pode autorizar upgrades UUPS.
 
 - `Minted(address indexed to, uint256 amount)`
 - `Burned(address indexed from, uint256 amount)`
+- `MaxSupplyAnnounced(uint256 maxSupply, string disclaimer)` — emitido no `initialize`
 
 ## Custom Errors
 
@@ -105,6 +126,7 @@ Apenas `DEFAULT_ADMIN_ROLE` pode autorizar upgrades UUPS.
 - `BurnFromZeroAddress()`
 - `BurnExceedsBalance(uint256 balance, uint256 amount)`
 - `ZeroAmount()`
+- `MaxSupplyExceeded(uint256 currentSupply, uint256 requested, uint256 maxSupply)`
 
 ## Integração com Diamond
 
@@ -136,6 +158,7 @@ O script inicializa com 1.000.000 CAS e define o deployer como admin, minter e p
 
 | Data | Versão | Descrição |
 |---|---|---|
+| 2025-07-12 | 0.3.0 | MAX_SUPPLY 10M, RATIO_ADMIN_ROLE, disclaimer on-chain |
 | 2025-07-12 | 0.2.0 | Documentação inicial do CASToken como contrato standalone UUPS |
 
 ![footer](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=100&section=footer&animation=twinkling)

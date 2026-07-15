@@ -46,7 +46,10 @@ A arquitetura utiliza o padrão **EIP-2535 Diamond Proxy**: um único endereço 
 
 ### Tokens e Treasury
 
-- [[cas-token]] — CASToken (ERC-20 UUPS, mintable, burnable, pausable)
+- [[cas-token]] — CASToken (ERC-20 UUPS, mintable, burnable, pausable, MAX_SUPPLY 10M)
+- [[cas-swap]] — CASSwap (swap CAS↔POL com ratio flexível)
+- [[cas-migration]] — CASMigration (conversão CAS v1 → v2, ratio 1:1)
+- [[liquidity-lock]] — LiquidityLock (bloqueio de LP tokens)
 - [[infrastructure-fund]] — InfrastructureFund (treasury CAS + POL)
 - [[fund-tracker-token]] — FundTrackerToken (espelha saldo do fundo no MetaMask)
 
@@ -82,7 +85,9 @@ A arquitetura utiliza o padrão **EIP-2535 Diamond Proxy**: um único endereço 
 | `ContractRegistryFacet` | Facet | Registry de endereços por nome e versão |
 | `PaymentFacet` | Facet | Configuração de CAS token e taxas |
 | `GasPromotionFacet` | Facet | Patrocínio de gas para operações |
-| `CASToken` | UUPS | ERC-20 interno (CAS) — mintable, burnable, pausable |
+| `CASToken` | UUPS | ERC-20 interno (CAS) — mintable, burnable, pausable, MAX_SUPPLY 10M |
+| `CASSwap` | UUPS | Swap CAS↔POL com ratio flexível e swap fee |
+| `LiquidityLock` | Standalone | Bloqueia LP tokens por período determinado |
 | `InfrastructureFund` | UUPS | Treasury — gerencia CAS e POL nativo |
 | `FundTrackerToken` | Standalone | ERC-20 que espelha saldo do fundo (aCAS, aPOL) |
 | `Faucet` | Ownable | Distribuição de POL nativo com cooldown |
@@ -115,10 +120,25 @@ npm run deploy:polygon      # Mainnet (Polygon)
 # 2. Deploy dos tokens (CASToken + InfrastructureFund)
 npx hardhat run scripts/deploy/01_deploy_tokens.ts --network polygonAmoy
 
-# 3. Deploy dos FundTrackerTokens (aCAS + aPOL)
+# 3. Deploy do CASSwap
+npx hardhat run scripts/deploy/03_deploy_cas_swap.ts --network polygonAmoy
+
+# 4. Adicionar liquidez DEX (QuickSwap)
+npx hardhat run scripts/deploy/04_add_dex_liquidity.ts --network polygonAmoy
+
+# 5. Lock de liquidez (LP tokens)
+npx hardhat run scripts/deploy/05_lock_liquidity.ts --network polygonAmoy
+
+# 6. Transfer para Multisig (Safe)
+npx hardhat run scripts/deploy/06_transfer_to_multisig.ts --network polygonAmoy
+
+# 7. Validação na testnet
+npx hardhat run scripts/utils/validate_amoy.ts --network polygonAmoy
+
+# 8. Deploy dos FundTrackerTokens (aCAS + aPOL)
 npx hardhat run scripts/deploy/01_deploy_fund_tracker.ts --network polygonAmoy
 
-# 4. Deploy do Faucet
+# 9. Deploy do Faucet
 npm run deploy:faucet:amoy
 ```
 
@@ -203,6 +223,7 @@ Consulte [[agent-dao]] e [[roadmap-dao]] para detalhes sobre tipos de proposta, 
 
 | Data | Versão | Descrição |
 |---|---|---|
+| 2025-07-12 | 0.4.0 | CASSwap, LiquidityLock, MAX_SUPPLY, deploy scripts 03-06, testes de integração |
 | 2025-07-12 | 0.3.0 | Templates de Issue e PR (.github/), seção de governança DAO na documentação |
 | 2025-07-12 | 0.2.0 | Reestruturação completa: Diamond EIP-2535, facets, novas facets (UserRegistry, Payment, GasPromotion), FundTrackerToken, MerkleLib |
 | 2025-07-11 | 0.1.0 | Documentação inicial: contratos standalone UUPS, arquitetura, deploy, auditoria |

@@ -59,8 +59,13 @@ FAUCET_AMOUNT=100000000000000000
 > 1. **Diamond** (com todas as facets)
 > 2. **Tokens** (CASToken + InfrastructureFund)
 > 3. **Registrar tokens no Diamond** (re-executar deploy do Diamond ou manualmente)
-> 4. **FundTrackerTokens** (aCAS + aPOL) — opcional
-> 5. **Faucet** — independente
+> 4. **CASSwap** (swap CAS↔POL com ratio flexível)
+> 5. **Adicionar liquidez DEX** (QuickSwap)
+> 6. **LiquidityLock** (bloquear LP tokens)
+> 7. **Transfer para Multisig** (Safe)
+> 8. **CASMigration** (se migrando de v1 → v2)
+> 9. **FundTrackerTokens** (aCAS + aPOL) — opcional
+> 10. **Faucet** — independente
 
 ## 1. Deploy do Diamond
 
@@ -131,7 +136,115 @@ INFRASTRUCTURE_FUND_ADDRESS=0x...
 > - `PaymentFacet.setCasToken(casTokenAddress)`
 > - `PaymentFacet.setInfrastructureFund(infraFundAddress)`
 
-## 3. Deploy dos FundTrackerTokens (opcional)
+## 3. Deploy do CASSwap
+
+```bash
+npx hardhat run scripts/deploy/03_deploy_cas_swap.ts --network polygonAmoy
+```
+
+O script:
+1. Deploy do `CASSwap` (UUPS proxy)
+2. Initialize com admin, CASToken e InfrastructureFund
+3. Deposita 500.000 CAS como reserva inicial
+4. Registra no ContractRegistry do Diamond
+
+### Pós-Deploy
+
+```env
+CAS_SWAP_ADDRESS=0x...
+```
+
+## 4. Adicionar Liquidez DEX (QuickSwap)
+
+```bash
+npx hardhat run scripts/deploy/04_add_dex_liquidity.ts --network polygonAmoy
+```
+
+O script:
+1. Aprova CAS e POL no router do QuickSwap
+2. Adiciona liquidez com `addLiquidityETH`
+3. Detecta o endereço do LP token
+4. Loga informações da posição de liquidez
+
+> [!warning] QuickSwap Router
+> Mainnet: `0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff`
+> Testnet: configurar no `.env` com `QUICKSWAP_ROUTER_ADDRESS`
+
+## 5. Lock de Liquidez
+
+```bash
+npx hardhat run scripts/deploy/05_lock_liquidity.ts --network polygonAmoy
+```
+
+O script:
+1. Verifica saldo de LP tokens do deployer
+2. Deploy do `LiquidityLock` com duração configurável
+3. Transfere LP tokens para o contrato de lock
+
+### Pós-Deploy
+
+```env
+LIQUIDITY_LOCK_ADDRESS=0x...
+LP_TOKEN_ADDRESS=0x...
+```
+
+## 6. Transferência para Multisig (Safe)
+
+```bash
+npx hardhat run scripts/deploy/06_transfer_to_multisig.ts --network polygonAmoy
+```
+
+O script:
+1. Transfere `DEFAULT_ADMIN_ROLE` do CASToken para o Safe
+2. Transfere `DEFAULT_ADMIN_ROLE` do InfrastructureFund para o Safe
+3. Transfere `DEFAULT_ADMIN_ROLE` do CASSwap para o Safe
+4. Define endereços de Rapport e Autor no InfrastructureFund
+
+> [!danger] Verifique o endereço do Safe
+> Confirme o endereço do Safe multisig antes de executar. Esta operação é irreversível.
+
+## 7. Validação na Testnet (Amoy)
+
+```bash
+npx hardhat run scripts/utils/validate_amoy.ts --network polygonAmoy
+```
+
+O script valida:
+1. Informações do CASToken (MAX_SUPPLY, disclaimer, roles)
+2. Buy/Sell no CASSwap
+3. Ajuste de ratio
+4. Integração com Diamond (PaymentFacet, ContractRegistry)
+
+## 8. Deploy do CASMigration (v1 → v2)
+
+> [!warning] Apenas para migração de tokens antigos
+> Pular este passo se não há tokens v1 em circulação.
+
+```bash
+npx hardhat run scripts/deploy/07_deploy_cas_migration.ts --network polygonAmoy
+```
+
+### Pré-requisitos
+
+- `OLD_CAS_ADDRESS` definido no `.env` (endereço do CAS v1)
+- `CAS_TOKEN_ADDRESS` definido no `.env` (endereço do CAS v2)
+- Deployer com `MINTER_ROLE` no CAS v2
+
+### O que o script faz
+
+1. Deploy do `CASMigration(oldCAS, newCAS)`
+2. Mint de `MIGRATION_RESERVE` CAS v2 para o contrato de migração
+3. Verifica saldo disponível
+
+### Pós-Deploy
+
+1. Setar `CAS_MIGRATION_ADDRESS` no `.env`
+2. Anunciar aos usuários:
+   - Aprovar CAS v1: `oldCAS.approve(migrationAddress, amount)`
+   - Migrar: `migration.migrate(amount)`
+3. Para usuários que não conseguem interagir diretamente, usar `batchMigrate`
+
+## 9. Deploy dos FundTrackerTokens (opcional)
 
 ```bash
 npx hardhat run scripts/deploy/01_deploy_fund_tracker.ts --network polygonAmoy
@@ -219,6 +332,7 @@ npx hardhat run scripts/upgrade_token.ts --network polygonAmoy
 
 | Data | Versão | Descrição |
 |---|---|---|
+| 2025-07-12 | 0.3.0 | Adicionados scripts 03-06 (CASSwap, DEX liquidity, LiquidityLock, Multisig) e validação Amoy |
 | 2025-07-12 | 0.2.0 | Reescrita completa: deploy do Diamond, tokens, fund trackers, faucet |
 | 2025-07-11 | 0.1.0 | Documentação inicial: deploy de contratos standalone UUPS |
 

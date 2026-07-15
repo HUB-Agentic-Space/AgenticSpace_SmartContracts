@@ -60,6 +60,7 @@ function depositNative() external payable whenNotPaused
 
 - `depositCas`: transfere CAS do `msg.sender` para o fundo via `safeTransferFrom`
 - `depositNative`: aceita POL nativo
+- `receive()`: aceita POL nativo sem chamada de função (usado pelo CASSwap.withdrawPOL)
 
 ### Transferências CAS
 
@@ -154,6 +155,7 @@ O script inicializa com o deployer como admin, treasurer e pauser. Os endereços
 
 | Data | Versão | Descrição |
 |---|---|---|
+| 2025-07-12 | 0.3.0 | Adicionada função `receive()` para aceitar POL do CASSwap |
 | 2025-07-12 | 0.2.0 | Documentação inicial do InfrastructureFund como contrato standalone UUPS |
 
 ![footer](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=100&section=footer&animation=twinkling)
