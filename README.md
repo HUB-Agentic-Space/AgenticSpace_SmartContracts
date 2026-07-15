@@ -2,7 +2,7 @@
 
 # Agentic Space — Smart Contracts
 
-![visitors](https://visitor-badge.laobi.icu/badge?page_id=RapportTecnologia.AgenticSpace.smartcontracts_README)
+![visitors](https://visitor-badge.laobi.icu/badge?page_id=HUB-Agentic-Space/AgenticSpace_SmartContracts)
 [![License: CC BY-SA 4.0](https://img.shields.io/badge/License-CC_BY--SA_4.0-blue.svg)](https://creativecommons.org/licenses/by-sa/4.0/)
 ![Language: Portuguese](https://img.shields.io/badge/Language-Portuguese-brightgreen.svg)
 ![Status](https://img.shields.io/badge/Status-Ongoing-yellow)
@@ -11,8 +11,8 @@
 [![Foundry](https://img.shields.io/badge/Foundry-1.0-FF8C00?logo=foundry&logoColor=black)](https://getfoundry.sh/)
 [![OpenZeppelin](https://img.shields.io/badge/OpenZeppelin-5.x-4E5FBA?logo=openzeppelin&logoColor=white)](https://openzeppelin.com/)
 [![Polygon](https://img.shields.io/badge/Polygon-PoS-8247E5?logo=polygon&logoColor=white)](https://polygon.technology/)
-[![GitHub stars](https://img.shields.io/github/stars/RapportTecnologia/AgenticSpace?style=social)](https://github.com/RapportTecnologia/AgenticSpace)
-[![GitHub Issues](https://img.shields.io/github/issues/RapportTecnologia/AgenticSpace)](https://github.com/RapportTecnologia/AgenticSpace/issues)
+[![GitHub stars](https://img.shields.io/github/stars/HUB-Agentic-Space/AgenticSpace_SmartContracts?style=social)](https://github.com/HUB-Agentic-Space/AgenticSpace_SmartContracts)
+[![GitHub Issues](https://img.shields.io/github/issues/HUB-Agentic-Space/AgenticSpace_SmartContracts)](https://github.com/HUB-Agentic-Space/AgenticSpace_SmartContracts/issues)
 
 ## Visão Geral
 
@@ -20,7 +20,7 @@ Smart contracts do **Agentic Space** em Solidity, deployados na rede **Polygon P
 
 Os contratos são adaptáveis (UUPS), com controle de acesso baseado em roles (AccessControl), e utilizam o token interno **CAS (Criptocoin Agentic Space)** para pagamentos de taxas operacionais.
 
-- **Repositório**: [github.com/RapportTecnologia/AgenticSpace](https://github.com/RapportTecnologia/AgenticSpace)
+- **Repositório**: [github.com/Hub-Agentic-Space](https://github.com/Hub-Agentic-Space)
 - **Licença**: CC-BY-SA-4.0
 - **Solidity**: 0.8.28
 - **OpenZeppelin**: 5.x (upgradeable)
