@@ -55,7 +55,8 @@ Processamento interno de taxas CAS. Usado por `AgentRegistryFacet`, `AgentValida
 | Função | Descrição |
 |---|---|
 | `processFeePayment(address payer, uint256 feeType)` | Transfere CAS do payer para o InfrastructureFund |
-| `defaultFees()` | Retorna taxas padrão (100, 10, 50 CAS) |
+| `defaultFees()` | Retorna as quatro taxas-base (100, 10, 50 e 1 CAS) |
+| `initDefaultCustomFees()` | Registra os tipos extensíveis 4, 5 e 6 |
 
 ### Fee Types
 
@@ -64,6 +65,10 @@ Processamento interno de taxas CAS. Usado por `AgentRegistryFacet`, `AgentValida
 | `FEE_TYPE_REGISTRATION` | 0 | Registro de agente |
 | `FEE_TYPE_VALIDATION` | 1 | Validação de agente |
 | `FEE_TYPE_DAO_PROPOSAL` | 2 | Proposta de DAO |
+| `FEE_TYPE_USER_REGISTRATION` | 3 | Registro de usuário |
+| `FEE_TYPE_PAUTA_SUBMISSION` | 4 | Envio de pauta comunitária |
+| `FEE_TYPE_VOTING` | 5 | Voto comunitário |
+| `FEE_TYPE_CERTIFICATE_ISSUANCE` | 6 | Emissão/reserva do certificado (50 CAS na TBA; não processar novamente para o fundo) |
 
 ### Custom Errors
 

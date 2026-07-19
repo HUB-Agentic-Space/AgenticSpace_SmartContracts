@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: "📖 Documentação dos Smart Contracts"
+    url: "https://github.com/carlosdelfino/AgenticSpace/tree/main/smartcontracts/docs"
+    about: "Consulte a documentação completa dos smart contracts antes de abrir uma issue."
+  - name: "🏛️ Governança DAO — Agentic Space"
+    url: "https://github.com/carlosdelfino/AgenticSpace/blob/main/smartcontracts/docs/agent-dao.md"
+    about: "Informações sobre a DAO principal, votação, propostas e Roadmap. Toda mudança deve ser aprovada via votação."
+  - name: "🗺️ Roadmap DAO"
+    url: "https://github.com/carlosdelfino/AgenticSpace/blob/main/smartcontracts/docs/roadmap-dao.md"
+    about: "Consulte o RoadmapDAO para entender o processo de planejamento e aprovação de mudanças."
+  - name: "🔒 Auditoria e Segurança"
+    url: "https://github.com/carlosdelfino/AgenticSpace/blob/main/smartcontracts/docs/audit-guide.md"
+    about: "Guia de auditoria com Slither, Mythril, Echidna e Solhint."

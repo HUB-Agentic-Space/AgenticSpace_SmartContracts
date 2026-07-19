@@ -163,11 +163,15 @@ Cada DAO (RoadMap, Agent) tem seu próprio namespace:
 | `registrationFee` | `uint256` | Taxa de registro de agente (default: 100 CAS) |
 | `validationFee` | `uint256` | Taxa de validação (default: 10 CAS) |
 | `daoProposalFee` | `uint256` | Taxa de proposta de DAO (default: 50 CAS) |
+| `userRegistrationFee` | `uint256` | Taxa de registro de usuário (default: 1 CAS) |
 
 ### Storage
 
 - `casToken` — endereço do CASToken (IERC20)
 - `infrastructureFund` — endereço do InfrastructureFund
+- `customFees` — valores dos tipos extensíveis (4+)
+- `feeTypeExists` — presença de cada tipo extensível
+- `registeredFeeTypes` — IDs enumeráveis por `getAllFeeTypes()`; o tipo 6 é o requisito de 50 CAS do certificado
 
 ## GasPromotionStorage
 

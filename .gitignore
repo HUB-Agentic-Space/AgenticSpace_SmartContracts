@@ -1,9 +1,14 @@
+contracts
+.env.falcet
+.env.github
+
 # Dependencies
 node_modules/
 
 # Hardhat artifacts
 artifacts/
 cache/
+deploy/
 typechain-types/
 
 # Remix compiler artifacts
@@ -28,13 +33,24 @@ deploy/*/openzeppelin/
 # Environment
 .env
 .env.local
+.env.github
 
 # Audit reports
 slither-report.json
+slither-raw-output.txt
 mythril-report.json
+mythril-*.json
 echidna-corpus/
+echidna-*.log
 coverage/
 coverage.json
+gas-report-raw.txt
+
+# Distribution dashboard reports
+reports/
+
+# SQLite database
+data/
 
 # Logs
 *.log
@@ -43,3 +59,35 @@ npm-debug.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# Metamask
+metamask/
+
+# Certificate sources are versioned even when the legacy contracts tree is ignored.
+!contracts/
+contracts/*
+!contracts/certificate/
+!contracts/certificate/ERC6551Registry.sol
+!contracts/certificate/RapportCertificate.sol
+!contracts/certificate/RapportCertificateAccount.sol
+!contracts/interfaces/
+contracts/interfaces/*
+!contracts/interfaces/IERC5192.sol
+!contracts/interfaces/IERC6551Account.sol
+!contracts/interfaces/IERC6551Executable.sol
+!contracts/interfaces/IERC6551Registry.sol
+!contracts/mocks/
+contracts/mocks/*
+!contracts/mocks/MockERC20.sol
+!contracts/mocks/MockFeeOnTransferERC20.sol
+!contracts/mocks/MockCertificateReceiver.sol
+!contracts/mocks/MockERC6551Registry.sol
+!contracts/mocks/MockToggleFeeERC20.sol
+
+# Keep only this source deployment script visible under ignored deploy folders.
+!scripts/deploy/
+scripts/deploy/*
+!scripts/deploy/12_deploy_rapport_certificate.ts
+!scripts/deploy/13_register_certificate_fee.ts
+!scripts/deploy/14_register_rapport_certificate.ts
+!scripts/deploy/15_finalize_rapport_certificate_roles.ts

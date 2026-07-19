@@ -17,14 +17,16 @@ tags:
 
 **Caminho:** `contracts/facets/PaymentFacet.sol`
 
-Facet responsável pela configuração de pagamentos em CAS dentro do Diamond. Gerencia o endereço do CASToken, do InfrastructureFund e a tabela de taxas.
+Facet responsável pela configuração de pagamentos em CAS dentro do Diamond. Gerencia o endereço do CASToken, do InfrastructureFund e o catálogo extensível de taxas/requisitos financeiros exibido pela aplicação.
 
 ## Visão Geral
 
 - Usa `PaymentStorage` como namespace de Diamond Storage
-- Configura taxas para registro, validação e propostas de DAO
+- Configura as quatro taxas-base e tipos extensíveis numerados
+- Expõe `getAllFeeTypes()` para que interfaces descubram novos tipos sem manter valores fixos no frontend
 - `PaymentLib` é usado internamente pelas outras facets para processar pagamentos
-- Requer `PAYMENT_ADMIN_ROLE` para configuração
+- Operações administrativas são restritas ao owner do Diamond
+- O tipo 6 representa a reserva de emissão do certificado; ele é catalogado aqui, mas movimentado pelo `RapportCertificate` diretamente para a TBA ERC-6551
 
 ## Funções
 
@@ -38,17 +40,21 @@ Configura as taxas padrão:
 - `registrationFee`: 100 CAS (100 * 1e18)
 - `validationFee`: 10 CAS (10 * 1e18)
 - `daoProposalFee`: 50 CAS (50 * 1e18)
+- `userRegistrationFee`: 1 CAS (1 * 1e18)
+
+Também registra os tipos extensíveis 4, 5 e 6. Em upgrade de um Diamond já
+inicializado, **não** chame `initPayment()`, porque isso redefine as quatro
+taxas-base. Use `registerFeeType(6, 50e18)` ou o script idempotente
+`13_register_certificate_fee.ts`.
 
 ### Configuração
 
 ```solidity
-function setCasToken(address casToken) external onlyRole(PAYMENT_ADMIN_ROLE)
-function setInfrastructureFund(address fund) external onlyRole(PAYMENT_ADMIN_ROLE)
-function updateFees(
-    uint256 registrationFee,
-    uint256 validationFee,
-    uint256 daoProposalFee
-) external onlyRole(PAYMENT_ADMIN_ROLE)
+function setCasToken(address casToken) external
+function setInfrastructureFund(address fund) external
+function updateFees(PaymentStorage.FeeConfig calldata newFees) external
+function registerFeeType(uint256 feeType, uint256 amount) external
+function setCustomFee(uint256 feeType, uint256 amount) external
 ```
 
 ### Consultas
@@ -57,10 +63,10 @@ function updateFees(
 |---|---|---|
 | `getCasToken()` | `address` | Endereço do CASToken |
 | `getInfrastructureFund()` | `address` | Endereço do InfrastructureFund |
-| `getFees()` | `(uint256, uint256, uint256)` | Taxas atuais (reg, val, dao) |
-| `getRegistrationFee()` | `uint256` | Taxa de registro |
-| `getValidationFee()` | `uint256` | Taxa de validação |
-| `getDaoProposalFee()` | `uint256` | Taxa de proposta de DAO |
+| `getFees()` | `FeeConfig` | Quatro taxas-base atuais |
+| `getCustomFee(uint256)` | `uint256` | Valor de um tipo extensível |
+| `isFeeTypeRegistered(uint256)` | `bool` | Existência de um tipo extensível |
+| `getAllFeeTypes()` | `(uint256[], uint256[])` | IDs e valores de todos os tipos extensíveis |
 
 ## PaymentLib
 
@@ -83,12 +89,25 @@ function processFeePayment(address payer, uint256 feeType) internal returns (uin
 | `FEE_TYPE_REGISTRATION` | 0 | Registro de agente |
 | `FEE_TYPE_VALIDATION` | 1 | Validação de agente |
 | `FEE_TYPE_DAO_PROPOSAL` | 2 | Proposta de DAO |
+| `FEE_TYPE_USER_REGISTRATION` | 3 | Registro de usuário |
+| `FEE_TYPE_PAUTA_SUBMISSION` | 4 | Envio de pauta comunitária (10 CAS) |
+| `FEE_TYPE_VOTING` | 5 | Voto comunitário (50 CAS) |
+| `FEE_TYPE_CERTIFICATE_ISSUANCE` | 6 | Emissão/reserva do certificado (50 CAS) |
+
+### Sem cobrança dupla no certificado
+
+O tipo 6 é a configuração oficial usada para exibição e auditoria. Ele não é
+passado a `processFeePayment`: a emissão já transfere exatamente 50 CAS para a
+conta ERC-6551 vinculada ao NFT. Cobrá-lo também pelo Diamond enviaria outros
+50 CAS ao InfrastructureFund e seria uma cobrança duplicada.
 
 ## Events
 
 - `CasTokenUpdated(address oldAddress, address newAddress)`
 - `InfrastructureFundUpdated(address oldAddress, address newAddress)`
-- `FeesUpdated(uint256 registrationFee, uint256 validationFee, uint256 daoProposalFee)`
+- `FeesUpdated(uint256 registrationFee, uint256 validationFee, uint256 daoProposalFee, uint256 userRegistrationFee)`
+- `FeeTypeRegistered(uint256 indexed feeType, uint256 amount)`
+- `CustomFeeSet(uint256 indexed feeType, uint256 amount)`
 
 ## Dependências
 
@@ -99,14 +118,16 @@ function processFeePayment(address payer, uint256 feeType) internal returns (uin
 
 ## Segurança
 
-- Apenas `PAYMENT_ADMIN_ROLE` pode alterar configurações
+- Apenas o owner do Diamond pode alterar configurações
 - Reverte se CAS token ou InfrastructureFund não configurados
-- `transferFrom` com verificação de sucesso
+- Transferências usam `SafeERC20`
+- Cada valor é limitado a 10.000 CAS
 
 ## Changelog
 
 | Data | Versão | Descrição |
 |---|---|---|
 | 2025-07-12 | 0.2.0 | Documentação inicial da PaymentFacet e PaymentLib |
+| 2026-07-17 | 0.3.0 | Catálogo extensível documentado e tipo 6 adicionado para emissão/reserva de certificado (50 CAS), sem cobrança duplicada |
 
 ![footer](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=100&section=footer&animation=twinkling)

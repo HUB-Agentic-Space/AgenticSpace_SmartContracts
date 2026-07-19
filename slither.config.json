@@ -1,0 +1,23 @@
+{
+  "exclude_informational": false,
+  "exclude_low": false,
+  "exclude_medium": false,
+  "exclude_high": false,
+  "filters": [],
+  "legacy_ast": false,
+  "exclude_paths": [
+    "node_modules",
+    "test",
+    "scripts",
+    "docs"
+  ],
+  "solc_disable_warnings": false,
+  "solc_errors": false,
+  "solc_remaps": [],
+  "solc_solcs_select": "0.8.28",
+  "solc_optimize": true,
+  "solc_optimize_runs": 200,
+  "detectors_to_run": "all",
+  "print": "json",
+  "output": "slither-report.json"
+}
