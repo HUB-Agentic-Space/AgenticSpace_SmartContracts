@@ -57,7 +57,7 @@ async function main() {
   const totalSupply = await casToken.totalSupply();
   const disclaimerText = await casToken.disclaimer();
 
-  check(name === "Criptocoin Agentic Space", `name = "${name}"`);
+  check(name === "Cryptocoin Agentic Space", `name = "${name}"`);
   check(symbol === "CAS", `symbol = "${symbol}"`);
   check(decimals === 18n, `decimals = ${decimals}`);
   check(maxSupply === ethers.parseEther("10000000"), `MAX_SUPPLY = ${ethers.formatEther(maxSupply)}`);

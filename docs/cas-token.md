@@ -17,14 +17,14 @@ tags:
 
 **Caminho:** `contracts/token/CASToken.sol`
 
-Token ERC-20 interno do Agentic Space (CAS — Criptocoin Agentic Space). Usado para pagar taxas em operações do Diamond (registro de agentes, validação, propostas de DAO).
+Token ERC-20 interno do Agentic Space (CAS — Cryptocoin Agentic Space). Usado para pagar taxas em operações do Diamond (registro de agentes, validação, propostas de DAO).
 
 ## Visão Geral
 
 - **Padrão:** ERC-20 UUPS Upgradeable (OpenZeppelin 5.x)
 - **Decimais:** 18
 - **Símbolo:** CAS
-- **Nome:** Criptocoin Agentic Space
+- **Nome:** Cryptocoin Agentic Space
 - **Fornecimento inicial:** 1.000.000 CAS (configurável no deploy)
 - **Fornecimento máximo (MAX_SUPPLY):** 10.000.000 CAS (imutável)
 - **Mintable:** Apenas `MINTER_ROLE` (respeita MAX_SUPPLY)
