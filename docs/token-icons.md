@@ -119,11 +119,16 @@ Base: favicon.svg do projeto (gradiente laranja, 3 círculos brancos conectados 
 |------------|--------|------|
 | MetaMask (EIP-747) | ✅ Implementado | Botão "Adicionar à MetaMask" no frontend |
 | Uniswap Token List | ✅ Criado | URL pública disponível |
-| DexScreener | ⏳ Pendente | Submeter logo via "Update Token Info" |
-| CoinGecko | ⏳ Pendente | Submeter formulário com logo 200x200 |
-| CoinMarketCap | ⏳ Pendente | Requer 60 dias de operação |
-| Trust Wallet | ⏳ Preparado | Aguardando 10k holders + CMC listing |
-| 1inch | ⏳ Preparado | Fork do Trust Wallet, mesma estrutura |
+| DexScreener | 🔄 Em processo | Script `listing:dexscreener` monitora indexação automática |
+| CoinGecko | 🔄 Em processo | Metadata + guia prontos em `docs/coingecko-listing-*` |
+| CoinMarketCap | ⏳ Pendente | Requer 60 dias de operação (após 12/09/2026) |
+| Trust Wallet | 🔄 Em processo | Script `listing:trustwallet` abre PR via GitHub API |
+| 1inch | ✅ Preparado | Token list publicada em `.well-known/agentic-space.tokenlist.json` |
+| CoinBrain | 🔄 Em processo | Script `listing:coinbrain` envia submissão via API |
+| LiveCoinWatch | 🔄 Em processo | Script `listing:livecoinwatch` envia formulário |
+| CoinStats | 🔄 Em processo | Script `listing:coinstats` monitora thresholds automáticos |
+| GeckoTerminal | 🔄 Em processo | Script `listing:geckoterminal` verifica indexação |
+| Blockspot | 🔄 Em processo | Script `listing:blockspot` envia formulário |
 
 ## Custo em Gas
 

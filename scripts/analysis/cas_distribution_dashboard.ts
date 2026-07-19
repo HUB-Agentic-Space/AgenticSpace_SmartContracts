@@ -92,6 +92,30 @@ interface Metrics {
   dailySeries: { date: string; count: number; volume: number }[];
 }
 
+interface DexPair {
+  dex: string;
+  pairAddress: string;
+  url: string;
+  priceUsd: number;
+  priceNative: number;
+  liquidityUsd: number;
+  volume24h: number;
+  txns24h: { buys: number; sells: number };
+  fdv: number;
+  marketCap: number;
+  quoteSymbol: string;
+}
+
+interface MarketData {
+  coingeckoListed: boolean;
+  coingeckoId: string | null;
+  coingeckoPriceUsd: number | null;
+  coingeckoMarketCap: number | null;
+  coingeckoVolume24h: number | null;
+  dexPairs: DexPair[];
+  bestPair: DexPair | null;
+}
+
 // ── Known address labels (env + SQLite DB) ─────────────────────────────
 
 const INFRA_LABELS = new Set([
@@ -216,6 +240,104 @@ async function fetchTotalSupply(tokenAddress: string): Promise<bigint> {
   return BigInt(result);
 }
 
+// ── CoinGecko API ─────────────────────────────────────────────────────
+
+async function fetchCoinGeckoStatus(tokenAddress: string): Promise<{
+  listed: boolean;
+  id: string | null;
+  priceUsd: number | null;
+  marketCap: number | null;
+  volume24h: number | null;
+}> {
+  const apiKey = process.env.COINGECKO_API_KEY?.trim();
+  const url = `https://api.coingecko.com/api/v3/coins/polygon/contract/${tokenAddress}`;
+  const headers: Record<string, string> = { accept: "application/json" };
+  if (apiKey) headers["x-cg-demo-api-key"] = apiKey;
+
+  log("INFO", "fetchCoinGeckoStatus", "Verificando listagem no CoinGecko", { token: tokenAddress });
+  try {
+    const res = await fetch(url, { headers });
+    if (res.status === 404) {
+      log("WARN", "fetchCoinGeckoStatus", "Token não listado no CoinGecko");
+      return { listed: false, id: null, priceUsd: null, marketCap: null, volume24h: null };
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = (await res.json()) as {
+      id: string;
+      market_data?: {
+        current_price?: { usd?: number };
+        market_cap?: { usd?: number };
+        total_volume?: { usd?: number };
+      };
+    };
+    const price = data.market_data?.current_price?.usd ?? null;
+    const mcap = data.market_data?.market_cap?.usd ?? null;
+    const vol = data.market_data?.total_volume?.usd ?? null;
+    log("OK", "fetchCoinGeckoStatus", "Token listado no CoinGecko", {
+      id: data.id, priceUsd: price, marketCap: mcap, volume24h: vol,
+    });
+    return { listed: true, id: data.id, priceUsd: price, marketCap: mcap, volume24h: vol };
+  } catch (err) {
+    log("WARN", "fetchCoinGeckoStatus", "Erro ao consultar CoinGecko", { error: (err as Error).message });
+    return { listed: false, id: null, priceUsd: null, marketCap: null, volume24h: null };
+  }
+}
+
+// ── DexScreener API ───────────────────────────────────────────────────
+
+async function fetchDexScreenerData(tokenAddress: string): Promise<{
+  dexPairs: DexPair[];
+  bestPair: DexPair | null;
+}> {
+  const url = `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`;
+  log("INFO", "fetchDexScreenerData", "Buscando pares DEX no DexScreener", { token: tokenAddress });
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = (await res.json()) as {
+      pairs?: Array<{
+        dexId: string;
+        url: string;
+        pairAddress: string;
+        priceNative: string;
+        priceUsd: string;
+        volume?: { h24?: number };
+        liquidity?: { usd?: number };
+        txns?: { h24?: { buys?: number; sells?: number } };
+        fdv?: number;
+        marketCap?: number;
+        quoteToken?: { symbol?: string };
+      }>;
+    };
+    const rawPairs = body.pairs ?? [];
+    const dexPairs: DexPair[] = rawPairs.map((p) => ({
+      dex: p.dexId,
+      pairAddress: p.pairAddress,
+      url: p.url,
+      priceUsd: parseFloat(p.priceUsd) || 0,
+      priceNative: parseFloat(p.priceNative) || 0,
+      liquidityUsd: p.liquidity?.usd ?? 0,
+      volume24h: p.volume?.h24 ?? 0,
+      txns24h: { buys: p.txns?.h24?.buys ?? 0, sells: p.txns?.h24?.sells ?? 0 },
+      fdv: p.fdv ?? 0,
+      marketCap: p.marketCap ?? 0,
+      quoteSymbol: p.quoteToken?.symbol ?? "?",
+    }));
+    const bestPair = dexPairs.length > 0
+      ? dexPairs.reduce((best, p) => (p.liquidityUsd > best.liquidityUsd ? p : best))
+      : null;
+    log("OK", "fetchDexScreenerData", "Pares DEX encontrados", {
+      pairCount: dexPairs.length,
+      bestDex: bestPair?.dex,
+      bestLiquidity: bestPair?.liquidityUsd,
+    });
+    return { dexPairs, bestPair };
+  } catch (err) {
+    log("WARN", "fetchDexScreenerData", "Erro ao consultar DexScreener", { error: (err as Error).message });
+    return { dexPairs: [], bestPair: null };
+  }
+}
+
 // ── Metrics computation ───────────────────────────────────────────────
 
 const ZERO = "0x0000000000000000000000000000000000000000";
@@ -304,7 +426,7 @@ function computeMetrics(transfers: TokenTransfer[], totalSupply: bigint): Metric
 
 // ── GenAI (OpenRouter) ────────────────────────────────────────────────
 
-async function generateAiAnalysis(metrics: Metrics): Promise<string> {
+async function generateAiAnalysis(metrics: Metrics, marketData: MarketData): Promise<string> {
   const apiKey = process.env.AI_API_KEY?.trim();
   const model = process.env.AI_MODEL?.trim();
   if (!apiKey || !model) {
@@ -321,6 +443,13 @@ async function generateAiAnalysis(metrics: Metrics): Promise<string> {
     infra: h.isContractLike,
   }));
 
+  const cgStatus = marketData.coingeckoListed
+    ? `Listado (id: ${marketData.coingeckoId}, preço: $${marketData.coingeckoPriceUsd}, market cap: $${marketData.coingeckoMarketCap}, volume 24h: $${marketData.coingeckoVolume24h})`
+    : "NÃO listado no CoinGecko";
+  const dexSummary = marketData.dexPairs.length
+    ? marketData.dexPairs.map((p) => `${p.dex} (${p.quoteSymbol}): preço $${p.priceUsd.toExponential(2)}, liquidez $${p.liquidityUsd.toFixed(2)}, vol24h $${p.volume24h.toFixed(2)}, txns24h ${p.txns24h.buys}b/${p.txns24h.sells}s`).join(" | ")
+    : "Nenhum par DEX encontrado";
+
   const prompt = `Você é um analista sênior de mercado cripto assessorando o admin/criador do token CAS (Polygon Mainnet, supply máximo 10.000.000, cunhado 1.000.000).
 O objetivo do admin é garantir que o CAS NÃO seja percebido como token fake ou de baixa qualidade por agregadores, exchanges e traders.
 
@@ -334,10 +463,15 @@ Dados on-chain atuais (fonte: Polygonscan):
 - Total de transferências: ${metrics.transferCount} (de ${metrics.firstTransfer?.toISOString().slice(0, 10)} a ${metrics.lastTransfer?.toISOString().slice(0, 10)})
 - Top 15 holders: ${JSON.stringify(topSummary)}
 
+Dados de mercado (fonte: CoinGecko + DexScreener):
+- CoinGecko: ${cgStatus}
+- Pares DEX: ${dexSummary}
+- Melhor par por liquidez: ${marketData.bestPair ? `${marketData.bestPair.dex} — $${marketData.bestPair.liquidityUsd.toFixed(2)} de liquidez` : "nenhum"}
+
 Produza em português, formato HTML simples (apenas <h3>, <p>, <ul>, <li>, <strong>), sem markdown:
 1. <h3>Diagnóstico de Distribuição</h3> — avaliação objetiva da saúde da distribuição.
-2. <h3>Riscos de Percepção (fake/low-quality)</h3> — o que pode fazer o token ser sinalizado negativamente (concentração, poucos holders, baixa liquidez, atividade artificial).
-3. <h3>Recomendações para o Admin</h3> — ações concretas e priorizadas (distribuição, liquidez em DEX, lock, vesting, transparência, verificação em agregadores).
+2. <h3>Riscos de Percepção (fake/low-quality)</h3> — o que pode fazer o token ser sinalizado negativamente (concentração, poucos holders, baixa liquidez, atividade artificial, não listagem no CoinGecko).
+3. <h3>Recomendações para o Admin</h3> — ações concretas e priorizadas (distribuição, liquidez em DEX, lock, vesting, transparência, verificação em agregadores, listagem no CoinGecko).
 4. <h3>Leitura para Traders/Investidores</h3> — o que um operador deve observar antes de operar CAS.
 Seja específico com os números fornecidos.`;
 
@@ -399,7 +533,7 @@ function shortAddr(a: string): string {
   return `${a.slice(0, 6)}…${a.slice(-4)}`;
 }
 
-function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string): string {
+function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marketData: MarketData): string {
   const topN = metrics.holders.slice(0, 20);
   const othersPct = Math.max(0, 100 - topN.reduce((s, h) => s + h.pct, 0));
 
@@ -450,6 +584,43 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string): stri
         ? { label: "MODERADO", color: "#f59e0b" }
         : { label: "CONTROLADO", color: "#10b981" };
 
+  // ── Market data rendering ──
+  const cgBadge = marketData.coingeckoListed
+    ? `<span class="badge" style="background:#10b98122;color:#10b981">✅ CoinGecko</span>`
+    : `<span class="badge" style="background:#f59e0b22;color:#f59e0b">⚠️ Não listado no CoinGecko</span>`;
+
+  const totalDexLiquidity = marketData.dexPairs.reduce((s, p) => s + p.liquidityUsd, 0);
+  const totalDexVolume = marketData.dexPairs.reduce((s, p) => s + p.volume24h, 0);
+  const bestPrice = marketData.bestPair?.priceUsd ?? null;
+
+  const marketKpis = marketData.coingeckoListed
+    ? `<div class="kpi"><div class="v">$${marketData.coingeckoPriceUsd?.toFixed(8) ?? "—"}</div><div class="l">Preço CoinGecko (USD)</div></div>
+  <div class="kpi"><div class="v">$${marketData.coingeckoMarketCap != null ? fmt(marketData.coingeckoMarketCap, 0) : "—"}</div><div class="l">Market Cap (CoinGecko)</div></div>
+  <div class="kpi"><div class="v">$${marketData.coingeckoVolume24h != null ? fmt(marketData.coingeckoVolume24h, 0) : "—"}</div><div class="l">Volume 24h (CoinGecko)</div></div>`
+    : `<div class="kpi"><div class="v">—</div><div class="l">CoinGecko: não listado</div></div>`;
+
+  const dexKpis = marketData.bestPair
+    ? `<div class="kpi"><div class="v">$${bestPrice!.toExponential(2)}</div><div class="l">Preço DEX (USD)</div></div>
+  <div class="kpi"><div class="v">$${fmt(totalDexLiquidity, 2)}</div><div class="l">Liquidez total DEX (USD)</div></div>
+  <div class="kpi"><div class="v">$${fmt(totalDexVolume, 2)}</div><div class="l">Volume 24h DEX (USD)</div></div>
+  <div class="kpi"><div class="v">${marketData.dexPairs.length}</div><div class="l">Pares DEX ativos</div></div>`
+    : `<div class="kpi"><div class="v">—</div><div class="l">DEX: sem pares encontrados</div></div>`;
+
+  const dexRows = marketData.dexPairs.length
+    ? marketData.dexPairs
+        .sort((a, b) => b.liquidityUsd - a.liquidityUsd)
+        .map((p) => `<tr>
+      <td><a href="${p.url}" target="_blank">${p.dex}</a></td>
+      <td>${p.quoteSymbol}</td>
+      <td>$${p.priceUsd.toExponential(2)}</td>
+      <td>$${fmt(p.liquidityUsd, 2)}</td>
+      <td>$${fmt(p.volume24h, 2)}</td>
+      <td>${p.txns24h.buys} / ${p.txns24h.sells}</td>
+      <td>$${p.fdv > 0 ? fmt(p.fdv, 0) : "—"}</td>
+    </tr>`)
+        .join("")
+    : `<tr><td colspan=\"7\" style=\"text-align:center;color:#94a3b8\">Nenhum par DEX encontrado no DexScreener</td></tr>`;
+
   return `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -491,7 +662,7 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string): stri
 <p class="sub">
   Token: <a href="https://polygonscan.com/token/${tokenAddress}" target="_blank">${tokenAddress}</a> · Polygon Mainnet (137) ·
   Gerado em ${new Date().toLocaleString("pt-BR")} · Fonte: Polygonscan ·
-  Risco de concentração: <span class="badge" style="background:${riskLevel.color}22;color:${riskLevel.color}">${riskLevel.label}</span>
+  Risco de concentração: <span class="badge" style="background:${riskLevel.color}22;color:${riskLevel.color}">${riskLevel.label}</span> · ${cgBadge}
 </p>
 
 <div class="kpis">
@@ -503,6 +674,18 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string): stri
   <div class="kpi"><div class="v">${metrics.gini}</div><div class="l">Índice de Gini</div></div>
   <div class="kpi"><div class="v">${fmt(metrics.hhi, 0)}</div><div class="l">HHI (0–10000)</div></div>
   <div class="kpi"><div class="v">${metrics.transferCount}</div><div class="l">Transferências totais</div></div>
+</div>
+
+<h2>💰 Dados de Mercado</h2>
+<div class="kpis">
+  ${marketKpis}
+  ${dexKpis}
+</div>
+<div class="card full">
+  <table>
+    <thead><tr><th>DEX</th><th>Quote</th><th>Preço (USD)</th><th>Liquidez (USD)</th><th>Volume 24h (USD)</th><th>Txns 24h (B/S)</th><th>FDV (USD)</th></tr></thead>
+    <tbody>${dexRows}</tbody>
+  </table>
 </div>
 
 <h2>🚨 Holders acima de 30% do supply</h2>
@@ -695,6 +878,27 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // ── Fetch market data (CoinGecko + DexScreener) ──
+  log("INFO", "main", "Buscando dados de mercado (CoinGecko + DexScreener)");
+  const [cgStatus, dexData] = await Promise.all([
+    fetchCoinGeckoStatus(tokenAddress),
+    fetchDexScreenerData(tokenAddress),
+  ]);
+  const marketData: MarketData = {
+    coingeckoListed: cgStatus.listed,
+    coingeckoId: cgStatus.id,
+    coingeckoPriceUsd: cgStatus.priceUsd,
+    coingeckoMarketCap: cgStatus.marketCap,
+    coingeckoVolume24h: cgStatus.volume24h,
+    dexPairs: dexData.dexPairs,
+    bestPair: dexData.bestPair,
+  };
+  log("OK", "main", "Dados de mercado consolidados", {
+    coingeckoListed: marketData.coingeckoListed,
+    dexPairs: marketData.dexPairs.length,
+    bestDex: marketData.bestPair?.dex,
+  });
+
   const metrics = computeMetrics(transfers, totalSupply);
   log("OK", "main", "Métricas calculadas", {
     holders: metrics.holderCount,
@@ -714,12 +918,12 @@ async function main(): Promise<void> {
     });
   }
 
-  const aiHtml = await generateAiAnalysis(metrics);
+  const aiHtml = await generateAiAnalysis(metrics, marketData);
 
   const reportsDir = path.join(SC_ROOT, "reports");
   fs.mkdirSync(reportsDir, { recursive: true });
   const outFile = path.join(reportsDir, `cas_distribution_${new Date().toISOString().slice(0, 10)}.html`);
-  fs.writeFileSync(outFile, buildHtml(metrics, tokenAddress, aiHtml), "utf-8");
+  fs.writeFileSync(outFile, buildHtml(metrics, tokenAddress, aiHtml, marketData), "utf-8");
   log("OK", "main", "Relatório HTML gerado", { file: outFile });
 
   openBrowser(outFile);

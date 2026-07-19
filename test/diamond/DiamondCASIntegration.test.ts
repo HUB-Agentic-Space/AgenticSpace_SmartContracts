@@ -120,7 +120,7 @@ describe("Diamond + CAS Integration", () => {
     await (await casToken["initialize(address,uint256,string,string)"](
       deployer.address,
       ethers.parseEther("1000000"),
-      "Criptocoin Agentic Space",
+      "Cryptocoin Agentic Space",
       "CAS"
     )).wait();
 

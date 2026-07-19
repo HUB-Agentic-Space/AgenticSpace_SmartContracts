@@ -22,7 +22,7 @@ describe("FundTrackerToken", () => {
     await (await casToken.initialize(
       deployer.address,
       INITIAL_SUPPLY,
-      "Criptocoin Agentic Space",
+      "Cryptocoin Agentic Space",
       "CAS"
     )).wait();
 

@@ -15,7 +15,7 @@ describe("CASMigration", () => {
     const CASToken = await ethers.getContractFactory("CASToken");
     const newCAS = await CASToken.deploy();
     await newCAS.waitForDeployment();
-    await newCAS.initialize(owner.address, ethers.parseEther("1000000"), "Criptocoin Agentic Space", "CAS");
+    await newCAS.initialize(owner.address, ethers.parseEther("1000000"), "Cryptocoin Agentic Space", "CAS");
 
     // Deploy CASMigration
     const CASMigration = await ethers.getContractFactory("CASMigration");

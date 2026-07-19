@@ -57,7 +57,16 @@
     "cas:db:stats": "tsx scripts/casswap/09_cas_db_cli.ts stats",
     "cas:db:txs": "tsx scripts/casswap/09_cas_db_cli.ts txs",
     "cas:db:search": "tsx scripts/casswap/09_cas_db_cli.ts search",
-    "cas:label": "tsx scripts/casswap/10_label_address.ts"
+    "cas:label": "tsx scripts/casswap/10_label_address.ts",
+    "listing:readiness": "hardhat run scripts/analysis/coingecko_listing_readiness.ts",
+    "listing:trustwallet": "hardhat run scripts/listing/01_trustwallet_submit.ts",
+    "listing:dexscreener": "hardhat run scripts/listing/02_dexscreener_check.ts",
+    "listing:coinbrain": "hardhat run scripts/listing/03_coinbrain_submit.ts",
+    "listing:livecoinwatch": "hardhat run scripts/listing/04_livecoinwatch_submit.ts",
+    "listing:coinstats": "hardhat run scripts/listing/05_coinstats_check.ts",
+    "listing:geckoterminal": "hardhat run scripts/listing/06_geckoterminal_check.ts",
+    "listing:blockspot": "hardhat run scripts/listing/07_blockspot_submit.ts",
+    "listing:submit-all": "hardhat run scripts/listing/08_run_all_listings.ts"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",

@@ -176,12 +176,22 @@ Atualizar o arquivo `trustwallet_assets/blockchains/polygon/info/` com:
 - Logo
 - Links sociais
 
-### Submeter para CoinGecko/CoinMarketCap
+### Submeter para CoinGecko/CoinMarketCap e Agregadores
 
 Após confirmar o deploy:
-1. Adicionar o contrato no [CoinGecko](https://www.coingecko.com/en/coins/list)
-2. Adicionar no [CoinMarketCap](https://coinmarketcap.com/)
-3. Informar o endereço do pair CAS/POL no QuickSwap
+
+1. **Validar prontidão**: `npm run listing:readiness` — score ≥ 70% recomendado
+2. **Submeter CoinGecko** (manual): seguir guia em `docs/coingecko-listing-guide.md`
+   - Metadata consolidada: `docs/coingecko-listing-metadata.json`
+   - Formulário: https://www.coingecko.com/en/coins/list
+3. **Executar scripts de listagem automatizada**: `npm run listing:submit-all`
+   - Trust Wallet: PR no GitHub via `gh` CLI (requer `gh auth login`)
+   - DexScreener: verificação de indexação automática
+   - CoinBrain, LiveCoinWatch, Blockspot: submissão via script
+   - CoinStats: monitoramento de thresholds
+   - GeckoTerminal: verificação de indexação
+4. **Submeter CoinMarketCap** (manual, após 60 dias): https://support.coinmarketcap.com/hc/en-us/requests/new?ticket_form_id=360000493112
+5. **Estratégia completa**: `docs/token-listing-strategy.md`
 
 ## 4. Endereços Deployados (Polygon Mainnet — 14/07/2026)
 

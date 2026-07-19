@@ -24,7 +24,7 @@ describe("RapportCertificate (ERC-721 + ERC-6551)", function () {
     const [admin, issuer, user, other, destination] = await ethers.getSigners();
 
     const MockERC20 = await ethers.getContractFactory("MockERC20");
-    const casToken = await MockERC20.deploy("Criptocoin Agentic Space", "CAS", 18) as any;
+    const casToken = await MockERC20.deploy("Cryptocoin Agentic Space", "CAS", 18) as any;
     await casToken.waitForDeployment();
 
     const Registry = await ethers.getContractFactory("ERC6551Registry");

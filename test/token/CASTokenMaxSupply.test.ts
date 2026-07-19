@@ -20,7 +20,7 @@ describe("CASToken — MAX_SUPPLY & Disclaimer", () => {
     await (await casToken["initialize(address,uint256,string,string)"](
       deployer.address,
       initialSupply,
-      "Criptocoin Agentic Space",
+      "Cryptocoin Agentic Space",
       "CAS"
     )).wait();
   });
