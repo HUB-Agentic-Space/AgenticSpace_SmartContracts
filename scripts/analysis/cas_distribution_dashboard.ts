@@ -533,7 +533,7 @@ function shortAddr(a: string): string {
   return `${a.slice(0, 6)}…${a.slice(-4)}`;
 }
 
-function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marketData: MarketData): string {
+function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marketData: MarketData, transfers: TokenTransfer[]): string {
   const topN = metrics.holders.slice(0, 20);
   const othersPct = Math.max(0, 100 - topN.reduce((s, h) => s + h.pct, 0));
 
@@ -620,6 +620,60 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marke
     </tr>`)
         .join("")
     : `<tr><td colspan=\"7\" style=\"text-align:center;color:#94a3b8\">Nenhum par DEX encontrado no DexScreener</td></tr>`;
+
+  // ── Transfer graph data (for vis.js network) ──
+  const labels = knownLabels();
+  const nodeStats = new Map<string, { sent: number; received: number; volume: number }>();
+  const edgeMap = new Map<string, { count: number; volume: number }>();
+
+  for (const t of transfers) {
+    const from = t.from.toLowerCase();
+    const to = t.to.toLowerCase();
+    const value = toNum(BigInt(t.value));
+
+    const fromStat = nodeStats.get(from) ?? { sent: 0, received: 0, volume: 0 };
+    fromStat.sent += 1;
+    fromStat.volume += value;
+    nodeStats.set(from, fromStat);
+
+    const toStat = nodeStats.get(to) ?? { sent: 0, received: 0, volume: 0 };
+    toStat.received += 1;
+    nodeStats.set(to, toStat);
+
+    const edgeKey = `${from}->${to}`;
+    const edge = edgeMap.get(edgeKey) ?? { count: 0, volume: 0 };
+    edge.count += 1;
+    edge.volume += value;
+    edgeMap.set(edgeKey, edge);
+  }
+
+  const maxTxnCount = Math.max(...[...nodeStats.values()].map((s) => s.sent + s.received), 1);
+  const maxEdgeVolume = Math.max(...[...edgeMap.values()].map((e) => e.volume), 1);
+
+  const graphNodes = [...nodeStats.entries()]
+    .filter(([addr]) => addr !== ZERO)
+    .map(([addr, stat]) => {
+      const known = labels.get(addr);
+      const totalTxn = stat.sent + stat.received;
+      const size = 12 + Math.round((totalTxn / maxTxnCount) * 48);
+      const isInfra = known?.isInfra ?? false;
+      const label = known?.label ?? shortAddr(addr);
+      const color = isInfra ? "#3b82f6" : addr === (process.env.DEPLOYER_ADDRESS?.toLowerCase() ?? "") ? "#f59e0b" : "#10b981";
+      return { id: addr, label, title: `${label}\\n${addr}\\nEnviadas: ${stat.sent} | Recebidas: ${stat.received}\\nVolume: ${fmt(stat.volume, 2)} CAS`, size, color };
+    });
+
+  const graphEdges = [...edgeMap.entries()]
+    .filter(([key]) => {
+      const [from] = key.split("->");
+      return from !== ZERO;
+    })
+    .map(([key, edge]) => {
+      const [from, to] = key.split("->");
+      const width = 1 + Math.round((edge.volume / maxEdgeVolume) * 8);
+      return { from, to, value: edge.count, title: `${edge.count} transferências\\n${fmt(edge.volume, 2)} CAS`, width };
+    });
+
+  const graphDataJson = JSON.stringify({ nodes: graphNodes, edges: graphEdges });
 
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -923,7 +977,7 @@ async function main(): Promise<void> {
   const reportsDir = path.join(SC_ROOT, "reports");
   fs.mkdirSync(reportsDir, { recursive: true });
   const outFile = path.join(reportsDir, `cas_distribution_${new Date().toISOString().slice(0, 10)}.html`);
-  fs.writeFileSync(outFile, buildHtml(metrics, tokenAddress, aiHtml, marketData), "utf-8");
+  fs.writeFileSync(outFile, buildHtml(metrics, tokenAddress, aiHtml, marketData, transfers), "utf-8");
   log("OK", "main", "Relatório HTML gerado", { file: outFile });
 
   openBrowser(outFile);

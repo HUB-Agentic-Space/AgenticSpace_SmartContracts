@@ -85,23 +85,51 @@ async function ghGetCurrentUser(): Promise<string> {
 async function ghRepoFork(owner: string, repo: string): Promise<{ forked: boolean; cloneUrl: string }> {
   log("INFO", "ghRepoFork", "Verificando/criando fork", { repo: `${owner}/${repo}` });
   const currentUser = await ghGetCurrentUser();
-  const forkFullName = `${currentUser}/${repo}`;
 
-  // Check if fork already exists
-  try {
-    const { stdout } = await ghExec(["api", `repos/${forkFullName}`, "--jq", ".clone_url"]);
-    log("OK", "ghRepoFork", "Fork já existe", { fork: forkFullName });
-    return { forked: false, cloneUrl: stdout };
-  } catch {
-    // Fork doesn't exist — create it
-    log("INFO", "ghRepoFork", "Criando fork", { repo: `${owner}/${repo}` });
-    await ghExec(["repo", "fork", `${owner}/${repo}`, "--clone=false"]);
-    // Wait briefly for fork to be available
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-    const { stdout: cloneUrl } = await ghExec(["api", `repos/${forkFullName}`, "--jq", ".clone_url"]);
-    log("OK", "ghRepoFork", "Fork criado", { fork: forkFullName });
-    return { forked: true, cloneUrl };
+  // GitHub may name the fork as `user/repo` or `user/owner_repo` (replacing / with _)
+  const possibleForkNames = [
+    `${currentUser}/${repo}`,
+    `${currentUser}/${owner}_${repo}`,
+    `${currentUser}/${owner}-${repo}`,
+  ];
+
+  // Check if fork already exists under any naming variant
+  for (const forkFullName of possibleForkNames) {
+    try {
+      const { stdout } = await ghExec(["api", `repos/${forkFullName}`, "--jq", ".clone_url"]);
+      log("OK", "ghRepoFork", "Fork já existe", { fork: forkFullName });
+      return { forked: false, cloneUrl: stdout };
+    } catch {
+      // Try next variant
+    }
   }
+
+  // Fork doesn't exist — create it
+  log("INFO", "ghRepoFork", "Criando fork", { repo: `${owner}/${repo}` });
+  await ghExec(["repo", "fork", `${owner}/${repo}`, "--clone=false"]);
+
+  // Retry loop — GitHub may take several seconds to provision the fork
+  // Try all naming variants on each attempt
+  let cloneUrl = "";
+  let foundForkName = "";
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 3000 * attempt));
+    for (const forkFullName of possibleForkNames) {
+      try {
+        const result = await ghExec(["api", `repos/${forkFullName}`, "--jq", ".clone_url"]);
+        cloneUrl = result.stdout;
+        foundForkName = forkFullName;
+        break;
+      } catch {
+        // Try next variant
+      }
+    }
+    if (cloneUrl) break;
+    log("DEBUG", "ghRepoFork", `Tentativa ${attempt}/5 — fork ainda não disponível`);
+  }
+  if (!cloneUrl) throw new Error(`Fork não ficou disponível após 5 tentativas (tentativas: ${possibleForkNames.join(", ")})`);
+  log("OK", "ghRepoFork", "Fork criado", { fork: foundForkName });
+  return { forked: true, cloneUrl };
 }
 
 async function ghPrCreate(
@@ -128,7 +156,7 @@ async function ghPrCreate(
 
 async function gitClone(cloneUrl: string, targetDir: string): Promise<void> {
   log("INFO", "gitClone", "Clonando fork", { dir: targetDir });
-  const repoSlug = cloneUrl.replace("https://github.com/", "");
+  const repoSlug = cloneUrl.replace("https://github.com/", "").replace(/\.git$/, "");
   await execFileAsync("gh", ["repo", "clone", repoSlug, targetDir, "--", "--depth=1"], {
     maxBuffer: 10 * 1024 * 1024,
     timeout: 120_000,
@@ -222,7 +250,11 @@ async function main(): Promise<void> {
 
   // 5. Sync with upstream master
   log("INFO", "main", "Sincronizando fork com upstream master");
-  await gitExec(["remote", "add", "upstream", `https://github.com/${UPSTREAM_REPO}.git`], tempDir);
+  try {
+    await gitExec(["remote", "add", "upstream", `https://github.com/${UPSTREAM_REPO}.git`], tempDir);
+  } catch {
+    log("DEBUG", "main", "Remote upstream já existe — usando existente");
+  }
   await gitExec(["fetch", "upstream", "master"], tempDir);
   await gitExec(["checkout", "master"], tempDir);
   await gitExec(["merge", "upstream/master", "--no-edit"], tempDir);
