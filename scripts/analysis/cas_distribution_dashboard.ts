@@ -562,7 +562,7 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marke
       </tr>`,
         )
         .join("")
-    : `<tr><td colspan="5" style="text-align:center;color:#10b981">✅ Nenhum holder externo acima de 30% do supply</td></tr>`;
+    : `<tr><td colspan="5" style="text-align:center;color:#F05F40">✅ Nenhum holder externo acima de 30% do supply</td></tr>`;
 
   const holderRows = topN
     .map(
@@ -579,15 +579,15 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marke
 
   const riskLevel =
     metrics.whales30.filter((w) => !w.isContractLike).length > 0
-      ? { label: "ALTO", color: "#ef4444" }
+      ? { label: "ALTO", color: "#eb3812" }
       : metrics.top10Pct > 90
-        ? { label: "MODERADO", color: "#f59e0b" }
-        : { label: "CONTROLADO", color: "#10b981" };
+        ? { label: "MODERADO", color: "#fcc650" }
+        : { label: "CONTROLADO", color: "#F05F40" };
 
   // ── Market data rendering ──
   const cgBadge = marketData.coingeckoListed
-    ? `<span class="badge" style="background:#10b98122;color:#10b981">✅ CoinGecko</span>`
-    : `<span class="badge" style="background:#f59e0b22;color:#f59e0b">⚠️ Não listado no CoinGecko</span>`;
+    ? `<span class="badge" style="background:#F05F4022;color:#F05F40">✅ CoinGecko</span>`
+    : `<span class="badge" style="background:#fcc65022;color:#cc7501">⚠️ Não listado no CoinGecko</span>`;
 
   const totalDexLiquidity = marketData.dexPairs.reduce((s, p) => s + p.liquidityUsd, 0);
   const totalDexVolume = marketData.dexPairs.reduce((s, p) => s + p.volume24h, 0);
@@ -600,11 +600,11 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marke
     : `<div class="kpi"><div class="v">—</div><div class="l">CoinGecko: não listado</div></div>`;
 
   const dexKpis = marketData.bestPair
-    ? `<div class="kpi"><div class="v">$${bestPrice!.toExponential(2)}</div><div class="l">Preço DEX (USD)</div></div>
-  <div class="kpi"><div class="v">$${fmt(totalDexLiquidity, 2)}</div><div class="l">Liquidez total DEX (USD)</div></div>
-  <div class="kpi"><div class="v">$${fmt(totalDexVolume, 2)}</div><div class="l">Volume 24h DEX (USD)</div></div>
-  <div class="kpi"><div class="v">${marketData.dexPairs.length}</div><div class="l">Pares DEX ativos</div></div>`
-    : `<div class="kpi"><div class="v">—</div><div class="l">DEX: sem pares encontrados</div></div>`;
+    ? `<div class="kpi"><div class="v">$${bestPrice!.toExponential(2)}</div><div class="l">Preço <span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span> (USD)</div></div>
+  <div class="kpi"><div class="v">$${fmt(totalDexLiquidity, 2)}</div><div class="l">Liquidez total <span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span> (USD)</div></div>
+  <div class="kpi"><div class="v">$${fmt(totalDexVolume, 2)}</div><div class="l">Volume 24h <span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span> (USD)</div></div>
+  <div class="kpi"><div class="v">${marketData.dexPairs.length}</div><div class="l">Pares <span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span> ativos</div></div>`
+    : `<div class="kpi"><div class="v">—</div><div class="l"><span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span>: sem pares encontrados</div></div>`;
 
   const dexRows = marketData.dexPairs.length
     ? marketData.dexPairs
@@ -619,7 +619,7 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marke
       <td>$${p.fdv > 0 ? fmt(p.fdv, 0) : "—"}</td>
     </tr>`)
         .join("")
-    : `<tr><td colspan=\"7\" style=\"text-align:center;color:#94a3b8\">Nenhum par DEX encontrado no DexScreener</td></tr>`;
+    : `<tr><td colspan=\"7\" style=\"text-align:center;color:#712d23\">Nenhum par DEX encontrado no DexScreener</td></tr>`;
 
   // ── Transfer graph data (for vis.js network) ──
   const labels = knownLabels();
@@ -657,9 +657,25 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marke
       const totalTxn = stat.sent + stat.received;
       const size = 12 + Math.round((totalTxn / maxTxnCount) * 48);
       const isInfra = known?.isInfra ?? false;
+      const isDeployer = addr === (process.env.DEPLOYER_ADDRESS?.toLowerCase() ?? "");
       const label = known?.label ?? shortAddr(addr);
-      const color = isInfra ? "#3b82f6" : addr === (process.env.DEPLOYER_ADDRESS?.toLowerCase() ?? "") ? "#f59e0b" : "#10b981";
-      return { id: addr, label, title: `${label}\\n${addr}\\nEnviadas: ${stat.sent} | Recebidas: ${stat.received}\\nVolume: ${fmt(stat.volume, 2)} CAS`, size, color };
+      const volumePct = stat.volume / maxEdgeVolume;
+      let color: string;
+      if (isDeployer) {
+        color = "#fcc650";
+      } else if (isInfra) {
+        color = volumePct > 0.3 ? "#cc7501" : "#b5651d";
+      } else if (volumePct > 0.5) {
+        color = "#F05F40";
+      } else if (volumePct > 0.2) {
+        color = "#eb3812";
+      } else if (volumePct > 0.05) {
+        color = "#ce6e6d";
+      } else {
+        color = "#d49a5a";
+      }
+      const tooltip = `<b>${label}</b><br><code>${addr}</code><br>Enviadas: ${stat.sent} | Recebidas: ${stat.received}<br>Volume: ${fmt(stat.volume, 2)} CAS`;
+      return { id: addr, label, title: tooltip, size, color };
     });
 
   const graphEdges = [...edgeMap.entries()]
@@ -670,10 +686,41 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marke
     .map(([key, edge]) => {
       const [from, to] = key.split("->");
       const width = 1 + Math.round((edge.volume / maxEdgeVolume) * 8);
-      return { from, to, value: edge.count, title: `${edge.count} transferências\\n${fmt(edge.volume, 2)} CAS`, width };
+      const volPct = edge.volume / maxEdgeVolume;
+      const edgeColor = volPct > 0.5 ? "#F05F40" : volPct > 0.2 ? "#fcc650" : volPct > 0.05 ? "#cc7501" : "rgba(255,255,255,0.15)";
+      const edgeHighlight = volPct > 0.5 ? "#eb3812" : volPct > 0.2 ? "#ffd98a" : "#F05F40";
+      const tooltip = `<b>${edge.count} transferências</b><br>Volume: ${fmt(edge.volume, 2)} CAS`;
+      return { from, to, value: edge.count, title: tooltip, width, color: edgeColor, highlight: edgeHighlight };
     });
 
   const graphDataJson = JSON.stringify({ nodes: graphNodes, edges: graphEdges });
+
+  // ── OHLC candlestick data (hourly volume aggregated per day) ──
+  const hourlyVolumeMap = new Map<string, Map<number, number>>();
+  for (const t of transfers) {
+    const dt = new Date(Number(t.timeStamp) * 1000);
+    const date = dt.toISOString().slice(0, 10);
+    const hour = dt.getUTCHours();
+    const value = toNum(BigInt(t.value));
+    if (!hourlyVolumeMap.has(date)) hourlyVolumeMap.set(date, new Map());
+    const hourMap = hourlyVolumeMap.get(date)!;
+    hourMap.set(hour, (hourMap.get(hour) ?? 0) + value);
+  }
+  const candleData = [...hourlyVolumeMap.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, hourMap]) => {
+      const hours = [...hourMap.entries()].sort(([a], [b]) => a - b);
+      if (hours.length === 0) return null;
+      const volumes = hours.map(([, v]) => v);
+      return {
+        date,
+        open: Math.round(hours[0][1] * 100) / 100,
+        high: Math.round(Math.max(...volumes) * 100) / 100,
+        low: Math.round(Math.min(...volumes) * 100) / 100,
+        close: Math.round(hours[hours.length - 1][1] * 100) / 100,
+      };
+    })
+    .filter((d): d is { date: string; open: number; high: number; low: number; close: number } => d !== null);
 
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -682,8 +729,9 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marke
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CAS — Painel de Distribuição</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
 <style>
-  :root { --bg:#0f172a; --card:#1e293b; --border:#334155; --text:#e2e8f0; --muted:#94a3b8; --accent:#10b981; --blue:#3b82f6; }
+  :root { --bg:#222222; --card:#712d23; --border:rgba(255,255,255,0.15); --text:#ffffff; --muted:#f7d4ca; --accent:#F05F40; --blue:#fcc650; }
   * { box-sizing:border-box; margin:0; padding:0; }
   body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,sans-serif; padding:24px; }
   h1 { font-size:1.6rem; margin-bottom:4px; }
@@ -705,13 +753,74 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marke
   th, td { padding:8px 10px; text-align:left; border-bottom:1px solid var(--border); }
   th { color:var(--muted); font-weight:600; }
   td a { color:var(--blue); text-decoration:none; }
-  .alert-row { background:rgba(239,68,68,.12); }
+  .alert-row { background:rgba(235,56,18,.12); }
   .badge { display:inline-block; padding:4px 12px; border-radius:999px; font-weight:700; font-size:.85rem; }
   canvas { max-height:340px; }
+  #network-graph canvas { max-height:none; }
   footer { margin-top:32px; color:var(--muted); font-size:.8rem; text-align:center; }
+  .tabs-bar { display:flex; flex-wrap:wrap; gap:4px; border-bottom:2px solid var(--border); margin-bottom:20px; }
+  .tab-btn { background:transparent; border:none; border-bottom:3px solid transparent; color:var(--muted); padding:10px 18px; cursor:pointer; font-size:.95rem; font-weight:600; transition:all .2s; border-radius:8px 8px 0 0; }
+  .tab-btn:hover { color:var(--text); background:rgba(255,255,255,.05); }
+  .tab-btn.active { color:var(--accent); border-bottom-color:var(--accent); background:rgba(240,95,64,.08); }
+  .tab-panel { display:none; }
+  .tab-panel.active { display:block; }
+  .print-btn { position:fixed; top:20px; right:20px; z-index:1000; background:var(--accent); color:#ffffff; border:none; border-radius:10px; padding:10px 20px; font-size:.9rem; font-weight:700; cursor:pointer; box-shadow:0 4px 12px rgba(240,95,64,.3); }
+  .print-btn:hover { transform:translateY(-2px); }
+  .term-tip { cursor:help; border-bottom:1px dashed var(--blue); position:relative; display:inline-block; }
+  .term-tip::after { content:attr(data-tip); position:absolute; bottom:calc(100% + 8px); left:50%; transform:translateX(-50%); background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:10px 14px; font-size:.8rem; line-height:1.5; min-width:220px; max-width:320px; white-space:normal; text-align:left; box-shadow:0 6px 20px rgba(0,0,0,.4); opacity:0; pointer-events:none; transition:opacity .2s; z-index:100; }
+  .term-tip::before { content:""; position:absolute; bottom:calc(100% + 2px); left:50%; transform:translateX(-50%); border:6px solid transparent; border-top-color:var(--card); opacity:0; transition:opacity .2s; z-index:100; }
+  .term-tip:hover::after, .term-tip:hover::before, .term-tip.is-open::after, .term-tip.is-open::before { opacity:1; }
+  .print-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:2000; justify-content:center; align-items:center; }
+  .print-overlay.show { display:flex; }
+  .print-modal { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:28px; max-width:480px; width:90%; }
+  .print-modal h3 { margin-bottom:16px; }
+  .print-modal label { display:flex; align-items:center; gap:10px; padding:8px 0; cursor:pointer; font-size:.95rem; }
+  .print-modal label input { width:18px; height:18px; accent-color:var(--accent); }
+  .print-modal-actions { display:flex; gap:12px; margin-top:20px; justify-content:flex-end; }
+  .print-modal-actions button { border:none; border-radius:8px; padding:10px 20px; font-weight:600; cursor:pointer; font-size:.9rem; }
+  .btn-print { background:var(--accent); color:#ffffff; }
+  .btn-cancel { background:var(--border); color:var(--text); }
+  #tab-graph .card.full { display:flex; flex-direction:column; min-height:calc(100vh - 280px); }
+  #network-graph { width:100%; height:calc(100vh - 340px); flex:1 1 auto; min-height:400px; border:1px solid var(--border); border-radius:12px; background:#070404; }
+  .graph-legend { display:flex; gap:20px; margin-top:12px; flex-wrap:wrap; font-size:.85rem; color:var(--muted); }
+  .graph-legend span { display:flex; align-items:center; gap:6px; }
+  .graph-legend .dot { width:12px; height:12px; border-radius:50%; display:inline-block; }
+  .vis-tooltip { background:#712d23 !important; color:#ffffff !important; border:1px solid rgba(255,255,255,0.15) !important; border-radius:8px !important; padding:10px 14px !important; font-size:.85rem !important; max-width:320px !important; box-shadow:0 4px 12px rgba(0,0,0,0.4) !important; }
+  .vis-tooltip b { color:#fcc650; }
+  .vis-tooltip code { color:#f7d4ca; background:rgba(255,255,255,0.08); padding:2px 6px; border-radius:4px; font-size:.8rem; }
+  .vis-tooltip br { display:block; margin-bottom:2px; }
+  @media print {
+    body { background:#fff !important; color:#222222 !important; padding:12px !important; -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; }
+    .print-btn, .tabs-bar, .print-overlay { display:none !important; }
+    .tab-panel { display:block !important; page-break-after:always; }
+    .tab-panel:last-child { page-break-after:auto; }
+    .card { background:#f7d4ca !important; border:1px solid rgba(34,34,34,0.15) !important; -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; }
+    .kpi { background:#f7d4ca !important; border:1px solid rgba(34,34,34,0.15) !important; -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; }
+    .kpi .v { color:#222222 !important; }
+    .kpi .l { color:#712d23 !important; }
+    h1, h2, h3 { color:#222222 !important; }
+    h2 { color:#F05F40 !important; }
+    h3 { color:#cc7501 !important; }
+    .sub { color:#712d23 !important; }
+    .sub a { color:#cc7501 !important; }
+    th { color:#712d23 !important; }
+    td { color:#222222 !important; }
+    td a { color:#cc7501 !important; }
+    .alert-row { background:rgba(235,56,18,.08) !important; -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; }
+    .badge { -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; }
+    table { border-color:rgba(34,34,34,0.15) !important; }
+    th, td { border-bottom:1px solid rgba(34,34,34,0.15) !important; }
+    .grid { grid-template-columns:1fr 1fr !important; }
+    canvas { max-height:280px !important; }
+    #network-graph { height:500px !important; border:1px solid rgba(34,34,34,0.15) !important; }
+    footer { color:#712d23 !important; }
+  }
 </style>
 </head>
 <body>
+
+<button class="print-btn" onclick="openPrintModal()">🖨️ Imprimir / PDF</button>
+
 <h1>🪙 CAS — Painel de Distribuição &amp; Qualidade</h1>
 <p class="sub">
   Token: <a href="https://polygonscan.com/token/${tokenAddress}" target="_blank">${tokenAddress}</a> · Polygon Mainnet (137) ·
@@ -719,77 +828,155 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marke
   Risco de concentração: <span class="badge" style="background:${riskLevel.color}22;color:${riskLevel.color}">${riskLevel.label}</span> · ${cgBadge}
 </p>
 
-<div class="kpis">
-  <div class="kpi"><div class="v">${fmt(toNum(metrics.totalSupply), 0)}</div><div class="l">Supply Total (CAS)</div></div>
-  <div class="kpi"><div class="v">${metrics.holderCount}</div><div class="l">Holders (saldo &gt; 0)</div></div>
-  <div class="kpi"><div class="v">${fmt(toNum(metrics.circulating), 0)} <small>(${metrics.circulatingPct}%)</small></div><div class="l">Circulante fora de infra/DEX</div></div>
-  <div class="kpi"><div class="v">${metrics.top1Pct.toFixed(2)}%</div><div class="l">Top 1 holder</div></div>
-  <div class="kpi"><div class="v">${metrics.top10Pct.toFixed(2)}%</div><div class="l">Top 10 holders</div></div>
-  <div class="kpi"><div class="v">${metrics.gini}</div><div class="l">Índice de Gini</div></div>
-  <div class="kpi"><div class="v">${fmt(metrics.hhi, 0)}</div><div class="l">HHI (0–10000)</div></div>
-  <div class="kpi"><div class="v">${metrics.transferCount}</div><div class="l">Transferências totais</div></div>
+<div class="tabs-bar">
+  <button class="tab-btn active" onclick="switchTab(event,'tab-overview')">📋 Visão Geral</button>
+  <button class="tab-btn" onclick="switchTab(event,'tab-market')">💰 Mercado</button>
+  <button class="tab-btn" onclick="switchTab(event,'tab-concentration')">🚨 Concentração</button>
+  <button class="tab-btn" onclick="switchTab(event,'tab-charts')">📊 Gráficos</button>
+  <button class="tab-btn" onclick="switchTab(event,'tab-holders')">🏆 Holders</button>
+  <button class="tab-btn" onclick="switchTab(event,'tab-graph')">🔗 Grafo de Transferências</button>
+  <button class="tab-btn" onclick="switchTab(event,'tab-ai')">🤖 Análise IA</button>
 </div>
 
-<h2>💰 Dados de Mercado</h2>
-<div class="kpis">
-  ${marketKpis}
-  ${dexKpis}
-</div>
-<div class="card full">
-  <table>
-    <thead><tr><th>DEX</th><th>Quote</th><th>Preço (USD)</th><th>Liquidez (USD)</th><th>Volume 24h (USD)</th><th>Txns 24h (B/S)</th><th>FDV (USD)</th></tr></thead>
-    <tbody>${dexRows}</tbody>
-  </table>
-</div>
-
-<h2>🚨 Holders acima de 30% do supply</h2>
-<div class="card full">
-  <table>
-    <thead><tr><th>Endereço</th><th>Rótulo</th><th>Saldo</th><th>% Supply</th><th>Classificação</th></tr></thead>
-    <tbody>${whaleRows}</tbody>
-  </table>
-</div>
-
-<h2>📊 Gráficos</h2>
-<div class="grid">
-  <div class="card"><h3>Distribuição do Supply (Top 20 + Outros)</h3><canvas id="donut"></canvas></div>
-  <div class="card"><h3>Top 20 Holders (% do supply)</h3><canvas id="bars"></canvas></div>
-  <div class="card"><h3>Curva de Lorenz (concentração)</h3><canvas id="lorenz"></canvas></div>
-  <div class="card"><h3>Atividade Diária (transferências e volume)</h3><canvas id="activity"></canvas></div>
+<div id="tab-overview" class="tab-panel active">
+  <div class="kpis">
+    <div class="kpi"><div class="v">${fmt(toNum(metrics.totalSupply), 0)}</div><div class="l">Supply Total (CAS)</div></div>
+    <div class="kpi"><div class="v">${metrics.holderCount}</div><div class="l">Holders (saldo &gt; 0)</div></div>
+    <div class="kpi"><div class="v">${fmt(toNum(metrics.circulating), 0)} <small>(${metrics.circulatingPct}%)</small></div><div class="l"><span class="term-tip" data-tip="Supply circulante fora de contratos de infraestrutura e DEX. Indica quanto do token está efetivamente disponível para negociação.">Circulante</span> fora de infra/DEX</div></div>
+    <div class="kpi"><div class="v">${metrics.top1Pct.toFixed(2)}%</div><div class="l">Top 1 holder</div></div>
+    <div class="kpi"><div class="v">${metrics.top10Pct.toFixed(2)}%</div><div class="l">Top 10 holders</div></div>
+    <div class="kpi"><div class="v">${metrics.gini}</div><div class="l">Índice de <span class="term-tip" data-tip="Índice de Gini — mede a desigualdade de distribuição de 0 (igualdade perfeita) a 1 (concentração máxima). Quanto mais próximo de 1, maior o risco do token ser percebido como controlado por poucos.">Gini</span></div></div>
+    <div class="kpi"><div class="v">${fmt(metrics.hhi, 0)}</div><div class="l"><span class="term-tip" data-tip="Herfindahl-Hirschman Index — soma dos quadrados das participações percentuais (0–10000). Abaixo de 1500 = competitivo; acima de 2500 = altamente concentrado. Usado por reguladores para avaliar monopólio.">HHI</span> (0–10000)</div></div>
+    <div class="kpi"><div class="v">${metrics.transferCount}</div><div class="l">Transferências totais</div></div>
+  </div>
+  <div class="card full">
+    <h3>Resumo Executivo</h3>
+    <p><strong>Supply total:</strong> ${fmt(toNum(metrics.totalSupply), 0)} CAS · <strong>Holders ativos:</strong> ${metrics.holderCount} · <strong>Transferências:</strong> ${metrics.transferCount}</p>
+    <p style="margin-top:8px"><strong>Concentração:</strong> Top 1 = ${metrics.top1Pct.toFixed(2)}% · Top 10 = ${metrics.top10Pct.toFixed(2)}% · <span class="term-tip" data-tip="Índice de Gini — mede a desigualdade de distribuição de 0 (igualdade perfeita) a 1 (concentração máxima). Quanto mais próximo de 1, maior o risco do token ser percebido como controlado por poucos.">Gini</span> = ${metrics.gini} · <span class="term-tip" data-tip="Herfindahl-Hirschman Index — soma dos quadrados das participações percentuais (0–10000). Abaixo de 1500 = competitivo; acima de 2500 = altamente concentrado. Usado por reguladores para avaliar monopólio.">HHI</span> = ${fmt(metrics.hhi, 0)}</p>
+    <p style="margin-top:8px"><strong><span class="term-tip" data-tip="Supply circulante fora de contratos de infraestrutura e DEX. Indica quanto do token está efetivamente disponível para negociação.">Circulante</span> (fora de infra/DEX):</strong> ${fmt(toNum(metrics.circulating), 0)} CAS (${metrics.circulatingPct}%)</p>
+    <p style="margin-top:8px"><strong>Risco de concentração:</strong> <span class="badge" style="background:${riskLevel.color}22;color:${riskLevel.color}">${riskLevel.label}</span></p>
+  </div>
 </div>
 
-<h2>🏆 Top 20 Holders</h2>
-<div class="card full">
-  <table>
-    <thead><tr><th>#</th><th>Endereço</th><th>Rótulo</th><th>Saldo</th><th>% Supply</th><th>Tipo</th></tr></thead>
-    <tbody>${holderRows}</tbody>
-  </table>
+<div id="tab-market" class="tab-panel">
+  <h2>💰 Dados de Mercado</h2>
+  <div class="kpis">
+    ${marketKpis}
+    ${dexKpis}
+  </div>
+  <div class="card full">
+    <table>
+      <thead><tr><th><span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span></th><th>Quote</th><th>Preço (USD)</th><th>Liquidez (USD)</th><th>Volume 24h (USD)</th><th>Txns 24h (B/S)</th><th><span class="term-tip" data-tip="Fully Diluted Valuation — valor de mercado se todo o supply estivesse em circulação ao preço atual. Diferente do market cap, considera o supply máximo.">FDV</span> (USD)</th></tr></thead>
+      <tbody>${dexRows}</tbody>
+    </table>
+  </div>
 </div>
 
-<h2>🤖 Análise GenAI (OpenRouter)</h2>
-<div class="card full">${aiHtml}</div>
+<div id="tab-concentration" class="tab-panel">
+  <h2>🚨 <span class="term-tip" data-tip="Whale — holder que possui mais de 30% do supply total. Carteiras externas (não-infra) nesse nível representam risco alto de manipulação de preço.">Whales</span> acima de 30% do supply</h2>
+  <div class="card full">
+    <table>
+      <thead><tr><th>Endereço</th><th>Rótulo</th><th>Saldo</th><th>% Supply</th><th>Classificação</th></tr></thead>
+      <tbody>${whaleRows}</tbody>
+    </table>
+  </div>
+  <div class="card full" style="margin-top:16px">
+    <h3>Métricas de Concentração</h3>
+    <p><strong><span class="term-tip" data-tip="Índice de Gini — mede a desigualdade de distribuição de 0 (igualdade perfeita) a 1 (concentração máxima). Quanto mais próximo de 1, maior o risco do token ser percebido como controlado por poucos.">Gini</span>:</strong> ${metrics.gini} (0 = igualdade perfeita, 1 = concentração máxima)</p>
+    <p style="margin-top:6px"><strong><span class="term-tip" data-tip="Herfindahl-Hirschman Index — soma dos quadrados das participações percentuais (0–10000). Abaixo de 1500 = competitivo; acima de 2500 = altamente concentrado. Usado por reguladores para avaliar monopólio.">HHI</span>:</strong> ${fmt(metrics.hhi, 0)} (0–10000; &lt;1500 = competitivo, &gt;2500 = altamente concentrado)</p>
+    <p style="margin-top:6px"><strong>Top 1:</strong> ${metrics.top1Pct.toFixed(2)}% · <strong>Top 5:</strong> ${metrics.top5Pct.toFixed(2)}% · <strong>Top 10:</strong> ${metrics.top10Pct.toFixed(2)}%</p>
+  </div>
+</div>
+
+<div id="tab-charts" class="tab-panel">
+  <h2>📊 Gráficos de Distribuição</h2>
+  <div class="grid">
+    <div class="card"><h3>Distribuição do Supply (Top 20 + Outros)</h3><canvas id="donut"></canvas></div>
+    <div class="card"><h3>Top 20 Holders (% do supply)</h3><canvas id="bars"></canvas></div>
+    <div class="card"><h3>Curva de <span class="term-tip" data-tip="Curva de Lorenz — visualiza a distribuição acumulada de riqueza. A distância entre a curva e a linha diagonal de igualdade perfeita indica o nível de concentração. Quanto maior a área entre as duas, maior a desigualdade.">Lorenz</span> (concentração)</h3><canvas id="lorenz"></canvas></div>
+    <div class="card"><h3>Atividade Diária (transferências e volume)</h3><canvas id="activity"></canvas></div>
+  </div>
+  <h2>🕯️ Evolução do CAS (Candlestick)</h2>
+  <div class="card full">
+    <h3>Volume Horário por Dia — OHLC</h3>
+    <p class="sub" style="margin-bottom:12px">Cada candle representa um dia: <span class="term-tip" data-tip="OHLC — Open-High-Low-Close. Formato de candlestick onde Open = valor da primeira hora ativa, High = maior valor horário do dia, Low = menor valor, Close = valor da última hora ativa.">OHLC</span>: Open = volume da primeira hora ativa · High = maior volume horário · Low = menor volume horário · Close = volume da última hora ativa. Laranja (C ≥ O) · Vermelho-escuro (C < O).</p>
+    <canvas id="candlestick"></canvas>
+  </div>
+</div>
+
+<div id="tab-holders" class="tab-panel">
+  <h2>🏆 Top 20 Holders</h2>
+  <div class="card full">
+    <table>
+      <thead><tr><th>#</th><th>Endereço</th><th>Rótulo</th><th>Saldo</th><th>% Supply</th><th>Tipo</th></tr></thead>
+      <tbody>${holderRows}</tbody>
+    </table>
+  </div>
+</div>
+
+<div id="tab-graph" class="tab-panel">
+  <h2>🔗 Grafo de Transferências</h2>
+  <p class="sub">Nós = endereços · Arestas = transferências (largura ∝ volume) · Tamanho do nó ∝ nº de transações</p>
+  <div class="card full">
+    <div id="network-graph"></div>
+    <div class="graph-legend">
+      <span><span class="dot" style="background:#fcc650"></span> Deployer/Admin</span>
+      <span><span class="dot" style="background:#cc7501"></span> Infra/DEX (alto volume)</span>
+      <span><span class="dot" style="background:#b5651d"></span> Infra/DEX (baixo volume)</span>
+      <span><span class="dot" style="background:#F05F40"></span> Carteira externa (alto volume)</span>
+      <span><span class="dot" style="background:#eb3812"></span> Carteira externa (médio volume)</span>
+      <span><span class="dot" style="background:#ce6e6d"></span> Carteira externa (baixo volume)</span>
+      <span><span class="dot" style="background:#d49a5a"></span> Carteira externa (mínimo volume)</span>
+    </div>
+  </div>
+</div>
+
+<div id="tab-ai" class="tab-panel">
+  <h2>🤖 Análise GenAI (OpenRouter)</h2>
+  <div class="card full">${aiHtml}</div>
+</div>
 
 <footer>CAS Distribution Dashboard · Agentic Space · dados on-chain via Polygonscan · uso interno do admin/operadores</footer>
+
+<div id="print-overlay" class="print-overlay">
+  <div class="print-modal">
+    <h3>🖨️ Imprimir / Exportar PDF</h3>
+    <p style="color:var(--muted);font-size:.85rem;margin-bottom:16px">Selecione as abas para incluir:</p>
+    <label><input type="checkbox" class="print-tab-cb" value="tab-overview" checked> 📋 Visão Geral</label>
+    <label><input type="checkbox" class="print-tab-cb" value="tab-market" checked> 💰 Mercado</label>
+    <label><input type="checkbox" class="print-tab-cb" value="tab-concentration" checked> 🚨 Concentração</label>
+    <label><input type="checkbox" class="print-tab-cb" value="tab-charts" checked> 📊 Gráficos</label>
+    <label><input type="checkbox" class="print-tab-cb" value="tab-holders" checked> 🏆 Holders</label>
+    <label><input type="checkbox" class="print-tab-cb" value="tab-graph" checked> 🔗 Grafo de Transferências</label>
+    <label><input type="checkbox" class="print-tab-cb" value="tab-ai" checked> 🤖 Análise IA</label>
+    <div class="print-modal-actions">
+      <button class="btn-cancel" onclick="closePrintModal()">Cancelar</button>
+      <button class="btn-print" onclick="doPrint()">Imprimir</button>
+    </div>
+  </div>
+</div>
 
 <script>
 const donutLabels = ${JSON.stringify(donutLabels)};
 const donutData = ${JSON.stringify(donutData)};
 const barLabels = ${JSON.stringify(topN.map((h) => h.label || shortAddr(h.address)))};
 const barData = ${JSON.stringify(topN.map((h) => Math.round(h.pct * 100) / 100))};
-const barColors = ${JSON.stringify(topN.map((h) => (h.pct > 30 ? "#ef4444" : h.isContractLike ? "#3b82f6" : "#10b981")))};
+const barColors = ${JSON.stringify(topN.map((h) => (h.pct > 30 ? "#eb3812" : h.isContractLike ? "#cc7501" : "#F05F40")))};
 const lorenzData = ${JSON.stringify(lorenz.map((p) => ({ x: Math.round(p.x * 100) / 100, y: Math.round(p.y * 100) / 100 })))};
 const dailyLabels = ${JSON.stringify(metrics.dailySeries.map((d) => d.date))};
 const dailyCounts = ${JSON.stringify(metrics.dailySeries.map((d) => d.count))};
 const dailyVolumes = ${JSON.stringify(metrics.dailySeries.map((d) => d.volume))};
+const graphData = ${graphDataJson};
 
-Chart.defaults.color = "#94a3b8";
-Chart.defaults.borderColor = "#334155";
-const palette = ["#10b981","#3b82f6","#f59e0b","#ef4444","#8b5cf6","#ec4899","#14b8a6","#f97316","#06b6d4","#84cc16",
-                 "#a855f7","#22c55e","#eab308","#f43f5e","#0ea5e9","#d946ef","#65a30d","#fb923c","#2dd4bf","#c084fc","#64748b"];
+Chart.defaults.color = "#f7d4ca";
+Chart.defaults.borderColor = "rgba(255,255,255,0.15)";
+const palette = ["#F05F40","#fcc650","#cc7501","#eb3812","#ce6e6d","#f7d4ca","#d4502e","#b5651d",
+                 "#fdd97a","#d9908f","#fae5df","#ff7a5c","#e89642","#ffd98a","#f54020","#c43d18",
+                 "#8a3a2c","#5d3a32","#eb6b4a","#e07a3a","#d49a5a"];
 
 new Chart(document.getElementById("donut"), {
   type: "doughnut",
-  data: { labels: donutLabels, datasets: [{ data: donutData, backgroundColor: palette, borderWidth: 1, borderColor: "#0f172a" }] },
+  data: { labels: donutLabels, datasets: [{ data: donutData, backgroundColor: palette, borderWidth: 1, borderColor: "#712d23" }] },
   options: { plugins: { legend: { position: "right", labels: { font: { size: 10 } } },
     tooltip: { callbacks: { label: (c) => c.label + ": " + c.parsed + "%" } } } }
 });
@@ -806,8 +993,8 @@ new Chart(document.getElementById("bars"), {
 new Chart(document.getElementById("lorenz"), {
   type: "line",
   data: { datasets: [
-    { label: "Lorenz (CAS)", data: lorenzData, borderColor: "#10b981", backgroundColor: "rgba(16,185,129,.15)", fill: true, pointRadius: 0, tension: .2 },
-    { label: "Igualdade perfeita", data: [{x:0,y:0},{x:100,y:100}], borderColor: "#64748b", borderDash: [6,4], pointRadius: 0 }
+    { label: "Lorenz (CAS)", data: lorenzData, borderColor: "#F05F40", backgroundColor: "rgba(240,95,64,.15)", fill: true, pointRadius: 0, tension: .2 },
+    { label: "Igualdade perfeita", data: [{x:0,y:0},{x:100,y:100}], borderColor: "#712d23", borderDash: [6,4], pointRadius: 0 }
   ]},
   options: { scales: {
       x: { type: "linear", min: 0, max: 100, title: { display: true, text: "% de holders (acumulado)" } },
@@ -816,13 +1003,167 @@ new Chart(document.getElementById("lorenz"), {
 
 new Chart(document.getElementById("activity"), {
   data: { labels: dailyLabels, datasets: [
-    { type: "bar", label: "Transferências", data: dailyCounts, backgroundColor: "#3b82f6", yAxisID: "y" },
-    { type: "line", label: "Volume (CAS)", data: dailyVolumes, borderColor: "#f59e0b", yAxisID: "y1", tension: .3, pointRadius: 2 }
+    { type: "bar", label: "Transferências", data: dailyCounts, backgroundColor: "#cc7501", yAxisID: "y" },
+    { type: "line", label: "Volume (CAS)", data: dailyVolumes, borderColor: "#fcc650", yAxisID: "y1", tension: .3, pointRadius: 2 }
   ]},
   options: { scales: {
       y: { position: "left", title: { display: true, text: "Transferências" } },
       y1: { position: "right", grid: { drawOnChartArea: false }, title: { display: true, text: "Volume CAS" } } } }
 });
+
+// ── Candlestick chart (custom wicks via plugin + floating-bar body) ──
+const candleData = ${JSON.stringify(candleData)};
+const candleLabels = candleData.map(d => d.date);
+const candleBodyData = candleData.map(d => [Math.min(d.open, d.close), Math.max(d.open, d.close)]);
+const candleColors = candleData.map(d => d.close >= d.open ? "#F05F40" : "#eb3812");
+
+const candleWickPlugin = {
+  id: "candleWicks",
+  afterDatasetsDraw(chart) {
+    const { ctx, scales } = chart;
+    const yScale = scales.y;
+    const meta = chart.getDatasetMeta(0);
+    candleData.forEach((d, i) => {
+      const bar = meta.data[i];
+      if (!bar) return;
+      const x = bar.x;
+      const yHigh = yScale.getPixelForValue(d.high);
+      const yLow = yScale.getPixelForValue(d.low);
+      ctx.save();
+      ctx.strokeStyle = d.close >= d.open ? "rgba(240,95,64,.7)" : "rgba(235,56,18,.7)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(x, yHigh);
+      ctx.lineTo(x, yLow);
+      ctx.stroke();
+      ctx.restore();
+    });
+  }
+};
+
+new Chart(document.getElementById("candlestick"), {
+  type: "bar",
+  data: {
+    labels: candleLabels,
+    datasets: [{
+      label: "Corpo (O–C)",
+      data: candleBodyData,
+      backgroundColor: candleColors,
+      borderColor: candleColors,
+      borderWidth: 1,
+      barPercentage: 0.6,
+      categoryPercentage: 0.8,
+    }],
+  },
+  options: {
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          title: (items) => candleData[items[0].dataIndex].date,
+          label: (ctx) => {
+            const d = candleData[ctx.dataIndex];
+            return [
+              "Open: " + d.open.toLocaleString("pt-BR", {maximumFractionDigits:2}) + " CAS",
+              "High: " + d.high.toLocaleString("pt-BR", {maximumFractionDigits:2}) + " CAS",
+              "Low: " + d.low.toLocaleString("pt-BR", {maximumFractionDigits:2}) + " CAS",
+              "Close: " + d.close.toLocaleString("pt-BR", {maximumFractionDigits:2}) + " CAS",
+            ];
+          },
+        },
+      },
+    },
+    scales: {
+      y: { title: { display: true, text: "Volume CAS por hora" } },
+      x: { ticks: { maxRotation: 45, autoSkip: true, maxTicksLimit: 20 } },
+    },
+  },
+  plugins: [candleWickPlugin],
+});
+
+// ── Tab switching ──
+let _graphNetwork = null;
+
+// ── Mobile tooltip toggle (click to open/close) ──
+document.querySelectorAll('.term-tip').forEach(el => {
+  el.addEventListener('click', (e) => {
+    e.stopPropagation();
+    document.querySelectorAll('.term-tip.is-open').forEach(o => { if (o !== el) o.classList.remove('is-open'); });
+    el.classList.toggle('is-open');
+  });
+});
+document.addEventListener('click', () => {
+  document.querySelectorAll('.term-tip.is-open').forEach(el => el.classList.remove('is-open'));
+});
+function switchTab(evt, tabId) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  evt.currentTarget.classList.add('active');
+  document.getElementById(tabId).classList.add('active');
+  if (tabId === 'tab-graph' && _graphNetwork) {
+    setTimeout(() => {
+      _graphNetwork.redraw();
+      _graphNetwork.fit({ animation: { duration: 600, easingFunction: 'easeInOutQuad' } });
+    }, 50);
+  }
+}
+
+// ── Print modal ──
+function openPrintModal() {
+  document.getElementById('print-overlay').classList.add('show');
+}
+function closePrintModal() {
+  document.getElementById('print-overlay').classList.remove('show');
+}
+function doPrint() {
+  closePrintModal();
+  const checked = Array.from(document.querySelectorAll('.print-tab-cb:checked')).map(cb => cb.value);
+  document.querySelectorAll('.tab-panel').forEach(p => {
+    if (!checked.includes(p.id)) { p.style.display = 'none'; }
+  });
+  window.print();
+  setTimeout(() => {
+    document.querySelectorAll('.tab-panel').forEach(p => { p.style.display = ''; });
+  }, 500);
+}
+
+// ── Transfer graph (vis-network) ──
+function htmlToElement(html) {
+  const div = document.createElement('div');
+  div.innerHTML = html;
+  return div.firstElementChild || div;
+}
+if (graphData.nodes.length > 0) {
+  const visNodes = new vis.DataSet(graphData.nodes.map(n => ({
+    id: n.id,
+    label: n.label,
+    title: htmlToElement(n.title),
+    color: { background: n.color, border: n.color, highlight: { background: n.color, border: '#ffffff' }, hover: { background: n.color, border: '#fcc650' } },
+    font: { color: '#ffffff', size: 10, strokeWidth: 2, strokeColor: '#070404' },
+    size: n.size,
+  })));
+  const visEdges = new vis.DataSet(graphData.edges.map(e => ({
+    from: e.from,
+    to: e.to,
+    width: e.width,
+    color: { color: e.color, highlight: e.highlight, hover: e.highlight },
+    arrows: 'to',
+    title: htmlToElement(e.title),
+  })));
+  _graphNetwork = new vis.Network(document.getElementById('network-graph'), {
+    nodes: visNodes,
+    edges: visEdges,
+  }, {
+    autoResize: true,
+    nodes: { shape: 'dot', scaling: { min: 6, max: 30 }, shadow: { enabled: true, color: 'rgba(0,0,0,0.3)', size: 10, x: 0, y: 0 } },
+    edges: { smooth: { type: 'continuous' }, arrows: { to: { scaleFactor: 0.5 } }, selectionWidth: 2, hoverWidth: 2 },
+    physics: { stabilization: { iterations: 200 }, barnesHut: { gravitationalConstant: -3000, centralGravity: 0.3 } },
+    interaction: { hover: true, tooltipDelay: 120, hoverConnectedEdges: true },
+  });
+  _graphNetwork.once('stabilizationIterationsDone', () => {
+    _graphNetwork.fit({ animation: { duration: 600, easingFunction: 'easeInOutQuad' } });
+  });
+}
 </script>
 </body>
 </html>`;
