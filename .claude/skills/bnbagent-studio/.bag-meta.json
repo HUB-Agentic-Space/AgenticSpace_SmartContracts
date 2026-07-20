@@ -1,0 +1,17 @@
+{
+  "content_key": "c9f792c7661752d699b028c68bf3736b6381e3dcaa42f932d5e0bb800d578d75",
+  "files": {
+    "bnbagent-studio/SKILL.md": "321bec80dc2865c304cb3a2fc7a7b1826eed876f542b8a2cde34fb5ca09ca02f",
+    "bnbagent-studio/references/bnbagent-studio-adding-to-project.md": "e1c3a6cbbe3c5e506f4bf31e423bec51c9d53b253757d84948f68b4db712413e",
+    "bnbagent-studio/references/bnbagent-studio-buying-from-bazaar.md": "e3ee3d9efc7edfdbd2296eb46cddfff1d22d3eaf177245b1d746c1ef22abb8e5",
+    "bnbagent-studio/references/bnbagent-studio-buying-via-8183.md": "01742c13d66bc377ae7589c38187549b8c3f11bcdb19acff48a833cd37ff132b",
+    "bnbagent-studio/references/bnbagent-studio-extending-signing.md": "a1411c49881d49c0e1bb7ba5705b2d3936a6a5a1bbb621959df0a237091e80f6",
+    "bnbagent-studio/references/bnbagent-studio-operating.md": "450d309c40c15e893db6da80b7e1c3fb56e61c5cc1b6cfa590cf950a036a56da",
+    "bnbagent-studio/references/bnbagent-studio-scaffolding-agent.md": "642e3c53fefa56938a778553a7eeae77b5aaa8729ad5fa9f61cd985d804a8553",
+    "bnbagent-studio/references/bnbagent-studio-selling-via-8183.md": "d45b6e9a6ab5d9ce8e30de870aa7c1a526a693c9379962b6e05511a0226a6951",
+    "bnbagent-studio/references/bnbagent-studio-use-aws-agentcore.md": "97979bf4dc74c906fab07e4c158f6d3c3d5105d7b69b290f2241bdf0a0145d53",
+    "bnbagent-studio/references/bnbagent-studio-using-twak-wallet.md": "057a70bee45964fb3a814dbad70fe5e516714750d1c023c76293ddc307ddc013",
+    "bnbagent-studio/references/bnbagent-studio-wiring-llm-tools.md": "a4825e6133aa21a65ffc0249fd10303e337ae785b67eed5fac2d71cadee1a096"
+  },
+  "package_version": "0.0.5"
+}

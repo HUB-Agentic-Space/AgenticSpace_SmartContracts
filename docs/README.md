@@ -67,6 +67,10 @@ A arquitetura utiliza o padrão **EIP-2535 Diamond Proxy**: um único endereço 
 - [[keys-setup]] — Obtenção de chaves e endereços
 - [[audit-guide]] — Auditoria e análise (Solhint, Slither, Mythril, Echidna)
 
+### bnbagent-studio
+
+- [[bnbagent-studio-install]] — Instalação do bnbagent-studio no Linux (pip + bag skills install)
+
 ## Contratos
 
 | Contrato | Tipo | Descrição |
