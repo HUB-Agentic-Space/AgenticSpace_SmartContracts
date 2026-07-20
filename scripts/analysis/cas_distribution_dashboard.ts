@@ -174,48 +174,136 @@ const API_BASES = [
   "https://api.polygonscan.com/api",
 ];
 
+const MAX_RETRIES = 5;
+const REQUEST_TIMEOUT_MS = 15_000;
+const RATE_LIMIT_EXTRA_DELAY_MS = 2_000;
+
+function isTransientError(status: number, message: string): boolean {
+  if (status === 429) return true;
+  if (status >= 500 && status < 600) return true;
+  if (message.toLowerCase().includes("rate limit") || message.toLowerCase().includes("max rate")) return true;
+  return false;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function scanRequest(params: Record<string, string>): Promise<unknown> {
   const apiKey = process.env.POLYGONSCAN_API_KEY ?? "";
   let lastError: Error | null = null;
+
   for (const base of API_BASES) {
     const url = new URL(base);
     if (base.includes("etherscan.io/v2")) url.searchParams.set("chainid", String(CHAIN_ID));
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
     url.searchParams.set("apikey", apiKey);
-    try {
-      const res = await fetch(url.toString());
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = (await res.json()) as { status: string; message: string; result: unknown };
-      if (body.status === "1" || (body.status === "0" && body.message === "No transactions found")) {
-        return body.result;
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const res = await fetchWithTimeout(url.toString(), REQUEST_TIMEOUT_MS);
+        if (!res.ok) {
+          const msg = `HTTP ${res.status}`;
+          if (isTransientError(res.status, msg) && attempt < MAX_RETRIES) {
+            const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
+            const extraDelay = res.status === 429 ? RATE_LIMIT_EXTRA_DELAY_MS : 0;
+            log("WARN", "scanRequest", "Erro transitório, retrying", {
+              base: base.split("/").pop(),
+              action: params.action,
+              attempt,
+              status: res.status,
+              backoffMs: Math.round(backoff + extraDelay),
+            });
+            await sleep(backoff + extraDelay);
+            continue;
+          }
+          throw new Error(msg);
+        }
+        const body = (await res.json()) as { status: string; message: string; result: unknown };
+        if (body.status === "1" || (body.status === "0" && body.message === "No transactions found")) {
+          return body.result;
+        }
+        if (isTransientError(0, body.message) && attempt < MAX_RETRIES) {
+          const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
+          log("WARN", "scanRequest", "API rate limited, retrying", {
+            base: base.split("/").pop(),
+            action: params.action,
+            attempt,
+            message: body.message,
+            backoffMs: Math.round(backoff + RATE_LIMIT_EXTRA_DELAY_MS),
+          });
+          await sleep(backoff + RATE_LIMIT_EXTRA_DELAY_MS);
+          continue;
+        }
+        throw new Error(`API status=${body.status} message=${body.message}`);
+      } catch (err) {
+        const errMsg = (err as Error).message;
+        const isAbort = errMsg.includes("abort") || errMsg.includes("timeout");
+        if ((isAbort || isTransientError(0, errMsg)) && attempt < MAX_RETRIES) {
+          const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
+          log("WARN", "scanRequest", "Erro transitório/timeout, retrying", {
+            base: base.split("/").pop(),
+            action: params.action,
+            attempt,
+            error: errMsg,
+            backoffMs: Math.round(backoff),
+          });
+          await sleep(backoff);
+          continue;
+        }
+        lastError = err as Error;
+        log("WARN", "scanRequest", "Falha na base, tentando fallback", {
+          base,
+          action: params.action,
+          error: errMsg,
+          attempt,
+        });
+        break;
       }
-      throw new Error(`API status=${body.status} message=${body.message}`);
-    } catch (err) {
-      lastError = err as Error;
-      log("WARN", "scanRequest", "Falha na base, tentando fallback", {
-        base,
-        action: params.action,
-        error: (err as Error).message,
-      });
     }
   }
-  throw lastError ?? new Error("Todas as bases da API falharam");
+  throw lastError ?? new Error("Todas as bases da API falharam após retries");
 }
 
 async function fetchAllTransfers(tokenAddress: string): Promise<TokenTransfer[]> {
   const transfers: TokenTransfer[] = [];
   const offset = 1000;
   let page = 1;
+  let pageDelay = 300;
   log("INFO", "fetchAllTransfers", "Iniciando coleta de transferências", { token: tokenAddress });
   for (;;) {
-    const result = (await scanRequest({
-      module: "account",
-      action: "tokentx",
-      contractaddress: tokenAddress,
-      page: String(page),
-      offset: String(offset),
-      sort: "asc",
-    })) as TokenTransfer[] | string;
+    let result: TokenTransfer[] | string;
+    try {
+      result = (await scanRequest({
+        module: "account",
+        action: "tokentx",
+        contractaddress: tokenAddress,
+        page: String(page),
+        offset: String(offset),
+        sort: "asc",
+      })) as TokenTransfer[] | string;
+    } catch (err) {
+      log("ERROR", "fetchAllTransfers", "Falha ao buscar página após retries", {
+        page,
+        error: (err as Error).message,
+        collectedSoFar: transfers.length,
+      });
+      if (transfers.length > 0) {
+        log("WARN", "fetchAllTransfers", "Retornando transferências parciais", { total: transfers.length });
+        return transfers;
+      }
+      throw err;
+    }
     if (!Array.isArray(result) || result.length === 0) break;
     transfers.push(...result);
     log("DEBUG", "fetchAllTransfers", "Página coletada", { page, count: result.length, total: transfers.length });
@@ -225,7 +313,7 @@ async function fetchAllTransfers(tokenAddress: string): Promise<TokenTransfer[]>
       log("WARN", "fetchAllTransfers", "Limite de 100 páginas atingido; análise parcial", { total: transfers.length });
       break;
     }
-    await new Promise((r) => setTimeout(r, 250)); // rate limit
+    await sleep(pageDelay);
   }
   log("OK", "fetchAllTransfers", "Coleta concluída", { total: transfers.length });
   return transfers;
@@ -256,7 +344,7 @@ async function fetchCoinGeckoStatus(tokenAddress: string): Promise<{
 
   log("INFO", "fetchCoinGeckoStatus", "Verificando listagem no CoinGecko", { token: tokenAddress });
   try {
-    const res = await fetch(url, { headers });
+    const res = await fetchWithTimeout(url, 10_000);
     if (res.status === 404) {
       log("WARN", "fetchCoinGeckoStatus", "Token não listado no CoinGecko");
       return { listed: false, id: null, priceUsd: null, marketCap: null, volume24h: null };
@@ -292,7 +380,7 @@ async function fetchDexScreenerData(tokenAddress: string): Promise<{
   const url = `https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`;
   log("INFO", "fetchDexScreenerData", "Buscando pares DEX no DexScreener", { token: tokenAddress });
   try {
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url, 10_000);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const body = (await res.json()) as {
       pairs?: Array<{
@@ -1252,19 +1340,61 @@ async function main(): Promise<void> {
     }
 
     // Try to use SQLite for labels even in API mode
+    let dbAvailable = false;
     try {
       getDB();
+      dbAvailable = true;
       log("OK", "main", "SQLite conectado para enriquecimento de labels");
     } catch (err) {
       log("WARN", "main", "SQLite indisponível, usando apenas labels do .env", { error: (err as Error).message });
     }
 
-    const [apiTransfers, apiSupply] = await Promise.all([
-      fetchAllTransfers(tokenAddress),
-      fetchTotalSupply(tokenAddress),
-    ]);
-    transfers = apiTransfers;
-    totalSupply = apiSupply;
+    // Fetch transfers and totalSupply independently (not Promise.all)
+    // so one failure doesn't kill the other
+    try {
+      transfers = await fetchAllTransfers(tokenAddress);
+      log("OK", "main", "Transferências obtidas via API", { count: transfers.length });
+    } catch (err) {
+      log("ERROR", "main", "Falha ao buscar transferências via API após retries", { error: (err as Error).message });
+      // Fallback to SQLite if available
+      if (dbAvailable && getTransactionCount() > 0) {
+        log("WARN", "main", "Fallback: usando transações do banco SQLite");
+        const dbTxs = getAllTransactionsFromDB();
+        transfers = dbTxs.map((t) => ({
+          hash: t.tx_hash,
+          from: t.from_address,
+          to: t.to_address,
+          value: t.value,
+          timeStamp: String(t.timestamp),
+          blockNumber: String(t.block_number),
+        }));
+        log("OK", "main", "Transações carregadas do SQLite (fallback)", { count: transfers.length });
+      } else {
+        log("ERROR", "main", "Sem fallback SQLite disponível. Use --use-db ou sincronize o banco primeiro.");
+        closeDB();
+        process.exit(1);
+      }
+    }
+
+    try {
+      totalSupply = await fetchTotalSupply(tokenAddress);
+      log("OK", "main", "Total supply obtido via API", { supply: toNum(totalSupply) });
+    } catch (err) {
+      log("WARN", "main", "Falha ao buscar total supply via API, calculando dos transfers", { error: (err as Error).message });
+    }
+
+    if (totalSupply === 0n && transfers.length > 0) {
+      const balances = new Map<string, bigint>();
+      for (const t of transfers) {
+        const from = t.from.toLowerCase();
+        const to = t.to.toLowerCase();
+        const value = BigInt(t.value);
+        if (from !== ZERO) balances.set(from, (balances.get(from) ?? 0n) - value);
+        if (to !== ZERO) balances.set(to, (balances.get(to) ?? 0n) + value);
+      }
+      totalSupply = [...balances.values()].reduce((s, b) => (b > 0n ? s + b : s), 0n);
+      log("WARN", "main", "Total supply aproximado dos transfers (sem API)", { approxSupply: toNum(totalSupply) });
+    }
   }
 
   if (transfers.length === 0) {
