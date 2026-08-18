@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Exec(npx ts-node)",
+      "Exec(xargs)",
+      "Exec(npx hardhat)",
+      "Exec(ls)",
+      "Exec(CCZ_REALTIME_HISTORICAL_SYNC=false CCZ_REALTIME_POLL_MS=5000 timeout)"
+    ]
+  }
+}
