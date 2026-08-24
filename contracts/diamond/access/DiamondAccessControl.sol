@@ -29,6 +29,11 @@ library DiamondAccessControl {
     bytes32 internal constant DAO_CANCELLER_ROLE = keccak256("DAO_CANCELLER_ROLE");
     bytes32 internal constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     bytes32 internal constant REGISTRAR_ROLE = keccak256("REGISTRAR_ROLE");
+    /// @dev EIP-8183 agent commerce dispute arbiter (resolveDispute).
+    bytes32 internal constant COMMERCE_ARBITER_ROLE = keccak256("COMMERCE_ARBITER_ROLE");
+    /// @dev x402 facilitator/relayer allowed to submit signed payment
+    ///      authorizations on behalf of a payer (settleWithAuthorization).
+    bytes32 internal constant X402_RELAYER_ROLE = keccak256("X402_RELAYER_ROLE");
 
     // -----------------------------------------------------------------------
     // Storage
