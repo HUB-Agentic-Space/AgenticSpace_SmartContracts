@@ -45,6 +45,14 @@ contract RapportCertificate is
         keccak256("RAPPORT_FOUNDERS_CERTIFICATE_SVG_V1");
     uint256 public constant FOUNDERS_MIN_CAS_DEPOSIT = 50 * 1e18;
 
+    /// @dev Phase ID of the founding member certificate ("Sócio Fundador").
+    ///      Holders of this certificate receive the TBA rebate on common
+    ///      certificate fees.
+    uint256 public constant FOUNDER_PHASE_ID = 1;
+
+    /// @dev Basis-points denominator (100% = 10000) for the TBA fee rebate.
+    uint256 public constant BPS_DENOMINATOR = 10000;
+
     // ERC-1167 runtime used by the canonical ERC-6551 v0.3.1 registry. The
     // registry appends abi.encode(salt, chainId, tokenContract, tokenId).
     bytes10 private constant ERC6551_PROXY_PREFIX =
@@ -75,6 +83,14 @@ contract RapportCertificate is
         uint256 endsAt;
         uint256 minted;
         bool active;
+        string skillsDescription;
+        string instructions;
+        uint256 extraFeeTypeId;
+        /// @dev Basis points (0-10000) of the extra fee rebated to the
+        ///      recipient's Founder TBA. The remainder goes to the
+        ///      infrastructure fund. Applied only if the recipient holds a
+        ///      Founder certificate at mint time.
+        uint256 tbaRebateBps;
     }
 
     struct Certificate {
@@ -109,6 +125,22 @@ contract RapportCertificate is
     mapping(address recipient => mapping(uint256 phaseId => uint256 tokenId))
         private certificatesByRecipientAndPhase;
     mapping(bytes32 documentHash => uint256 tokenId) private tokensByDocumentHash;
+
+    /// @dev Merkle root of certificate data (name, tokenId, issuedAt, recipient,
+    ///      skillsDescription, instructions). Zero for legacy certificates.
+    mapping(uint256 tokenId => bytes32 merkleRoot) public certificateMerkleRoots;
+
+    /// @dev Merkle root of documentary proof-of-work evidence submitted by the
+    ///      user and attested by the issuer. Zero for legacy certificates.
+    mapping(uint256 tokenId => bytes32 merkleRootProof)
+        public certificateMerkleRootProofs;
+
+    /// @dev Tracks which phases are active simultaneously (challenge model).
+    mapping(uint256 phaseId => bool) public activePhases;
+
+    /// @dev Prerequisite phase IDs for each phase. A user must hold certificates
+    ///      for all prerequisites before a phase is considered unlocked.
+    mapping(uint256 phaseId => uint256[]) private phasePrerequisites;
 
     /// @dev Tracks CAS deposited by a user for a specific phase via
     ///      depositCasForMint(). The mint consumes from this balance instead
@@ -152,6 +184,11 @@ contract RapportCertificate is
         bytes32 indexed documentHash,
         address indexed attestedBy
     );
+    event MerkleRootAttested(
+        uint256 indexed tokenId,
+        bytes32 indexed merkleRoot,
+        address indexed attestedBy
+    );
     event CasBonusGranted(
         uint256 indexed tokenId,
         address indexed recipient,
@@ -165,6 +202,31 @@ contract RapportCertificate is
         uint256 amount,
         uint256 newBalance
     );
+
+    event PhasePrerequisitesSet(
+        uint256 indexed phaseId,
+        uint256[] prerequisitePhaseIds
+    );
+
+    event PhaseMetadataUpdated(
+        uint256 indexed phaseId,
+        string skillsDescription,
+        string instructions
+    );
+
+    event MerkleRootProofAttested(
+        uint256 indexed tokenId,
+        bytes32 indexed merkleRootProof,
+        address indexed attestedBy
+    );
+
+    event PhaseExtraFeeTypeUpdated(
+        uint256 indexed phaseId,
+        uint256 extraFeeTypeId,
+        uint256 tbaRebateBps
+    );
+
+    event BaseURIUpdated(string oldBaseURI, string newBaseURI);
 
     error ZeroAddress();
     error InvalidContract(address account);
@@ -195,11 +257,20 @@ contract RapportCertificate is
     error CertificateIsRevoked(uint256 tokenId);
     error DocumentHashAlreadySet(uint256 tokenId);
     error DocumentHashAlreadyUsed(bytes32 documentHash, uint256 tokenId);
+    error MerkleRootAlreadySet(uint256 tokenId);
+    error MerkleRootProofAlreadySet(uint256 tokenId);
     error CasBonusAlreadyGranted(uint256 tokenId);
     error CasBonusTransferMismatch(uint256 expectedMinimum, uint256 received);
     error InsufficientCasDepositBalance(uint256 available, uint256 required);
     error NoCasDepositToWithdraw(uint256 available);
     error DepositPhaseNotActive(uint256 phaseId);
+    error PhaseAlreadyActive(uint256 phaseId);
+    error PhaseNotActiveForDeactivation(uint256 phaseId);
+    error PrerequisitePhaseNotFound(uint256 phaseId);
+    error PrerequisiteCycleDetected(uint256 phaseId, uint256 prerequisitePhaseId);
+    error PhasePrerequisitesNotMet(uint256 phaseId, uint256 missingPrerequisite);
+    error SelfPrerequisite(uint256 phaseId);
+    error InvalidRebateBps(uint256 provided, uint256 max);
 
     constructor(
         address admin,
@@ -240,8 +311,13 @@ contract RapportCertificate is
             startsAt: block.timestamp,
             endsAt: 0,
             minted: 0,
-            active: true
+            active: true,
+            skillsDescription: "",
+            instructions: "",
+            extraFeeTypeId: 0,
+            tbaRebateBps: 0
         });
+        activePhases[1] = true;
 
         emit PhaseCreated(
             1,
@@ -254,18 +330,25 @@ contract RapportCertificate is
         emit PhaseActivated(1, 0);
     }
 
-    /// @notice Creates an immutable phase configuration. Activation is a
-    ///         separate action so the dashboard can prepare phases in advance.
+    /// @notice Creates an immutable phase/challenge configuration. Activation
+    ///         is a separate action so the dashboard can prepare phases in advance.
     function createPhase(
         string calldata name_,
         bytes32 templateHash,
         uint256 minCasDeposit,
         uint256 startsAt,
-        uint256 endsAt
+        uint256 endsAt,
+        string calldata skillsDescription_,
+        string calldata instructions_,
+        uint256 extraFeeTypeId_,
+        uint256 tbaRebateBps_
     ) external onlyRole(PHASE_MANAGER_ROLE) returns (uint256 phaseId) {
         if (bytes(name_).length == 0) revert EmptyName();
         if (templateHash == bytes32(0)) revert EmptyHash();
         if (minCasDeposit == 0) revert InsufficientCasDeposit(1, 0);
+        if (tbaRebateBps_ > BPS_DENOMINATOR) {
+            revert InvalidRebateBps(tbaRebateBps_, BPS_DENOMINATOR);
+        }
 
         uint256 effectiveStart = startsAt == 0 ? block.timestamp : startsAt;
         if (endsAt != 0 && endsAt <= effectiveStart) {
@@ -280,7 +363,11 @@ contract RapportCertificate is
             startsAt: effectiveStart,
             endsAt: endsAt,
             minted: 0,
-            active: false
+            active: false,
+            skillsDescription: skillsDescription_,
+            instructions: instructions_,
+            extraFeeTypeId: extraFeeTypeId_,
+            tbaRebateBps: tbaRebateBps_
         });
 
         emit PhaseCreated(
@@ -291,27 +378,72 @@ contract RapportCertificate is
             effectiveStart,
             endsAt
         );
+
+        if (extraFeeTypeId_ != 0 || tbaRebateBps_ != 0) {
+            emit PhaseExtraFeeTypeUpdated(phaseId, extraFeeTypeId_, tbaRebateBps_);
+        }
     }
 
+    /// @notice Sets or updates the extra fee type for a phase. The fee type ID
+    ///         references a custom fee registered in PaymentFacet. Use 0 to
+    ///         disable the extra fee for this phase.
+    /// @dev Validation of fee type registration is performed off-chain by the
+    ///      backend and at mint time by CertificateFacet, which has access to
+    ///      PaymentStorage. RapportCertificate is standalone and cannot read
+    ///      PaymentStorage directly.
+    function setPhaseExtraFeeType(
+        uint256 phaseId,
+        uint256 extraFeeTypeId_,
+        uint256 tbaRebateBps_
+    ) external onlyRole(PHASE_MANAGER_ROLE) {
+        Phase storage phase = phases[phaseId];
+        if (bytes(phase.name).length == 0) revert InvalidPhase(phaseId);
+        if (tbaRebateBps_ > BPS_DENOMINATOR) {
+            revert InvalidRebateBps(tbaRebateBps_, BPS_DENOMINATOR);
+        }
+        phase.extraFeeTypeId = extraFeeTypeId_;
+        phase.tbaRebateBps = tbaRebateBps_;
+        emit PhaseExtraFeeTypeUpdated(phaseId, extraFeeTypeId_, tbaRebateBps_);
+    }
+
+    /// @notice Updates the mutable metadata (skills description and
+    ///         instructions) of an existing phase/challenge.
+    function updatePhaseMetadata(
+        uint256 phaseId,
+        string calldata skillsDescription_,
+        string calldata instructions_
+    ) external onlyRole(PHASE_MANAGER_ROLE) {
+        Phase storage phase = phases[phaseId];
+        if (bytes(phase.name).length == 0) revert InvalidPhase(phaseId);
+        phase.skillsDescription = skillsDescription_;
+        phase.instructions = instructions_;
+        emit PhaseMetadataUpdated(phaseId, skillsDescription_, instructions_);
+    }
+
+    /// @notice Activates a phase/challenge. Multiple phases can be active
+    ///         simultaneously in the challenge model (parallel challenges).
     function activatePhase(uint256 phaseId) external onlyRole(PHASE_MANAGER_ROLE) {
         Phase storage phase = phases[phaseId];
         if (bytes(phase.name).length == 0) revert InvalidPhase(phaseId);
-
-        uint256 previousPhaseId = currentPhaseId;
-        if (previousPhaseId != 0) {
-            phases[previousPhaseId].active = false;
-        }
+        if (activePhases[phaseId]) revert PhaseAlreadyActive(phaseId);
 
         phase.active = true;
+        activePhases[phaseId] = true;
         currentPhaseId = phaseId;
-        emit PhaseActivated(phaseId, previousPhaseId);
+        emit PhaseActivated(phaseId, 0);
     }
 
-    function deactivateCurrentPhase() external onlyRole(PHASE_MANAGER_ROLE) {
-        uint256 phaseId = currentPhaseId;
-        if (phaseId == 0) revert InvalidPhase(0);
-        phases[phaseId].active = false;
-        currentPhaseId = 0;
+    /// @notice Deactivates a specific phase/challenge without affecting others.
+    function deactivatePhase(uint256 phaseId) external onlyRole(PHASE_MANAGER_ROLE) {
+        Phase storage phase = phases[phaseId];
+        if (bytes(phase.name).length == 0) revert InvalidPhase(phaseId);
+        if (!activePhases[phaseId]) revert PhaseNotActiveForDeactivation(phaseId);
+
+        phase.active = false;
+        activePhases[phaseId] = false;
+        if (currentPhaseId == phaseId) {
+            currentPhaseId = 0;
+        }
         emit PhaseDeactivated(phaseId);
     }
 
@@ -323,7 +455,7 @@ contract RapportCertificate is
     /// @dev The CAS must already be in this contract's balance. The function
     ///      credits the caller's deposit ledger for the specified phase.
     function depositCasForMint(uint256 phaseId) external nonReentrant whenNotPaused {
-        if (phaseId == 0 || phaseId != currentPhaseId) {
+        if (phaseId == 0 || !activePhases[phaseId]) {
             revert DepositPhaseNotActive(phaseId);
         }
         Phase storage phase = phases[phaseId];
@@ -355,7 +487,7 @@ contract RapportCertificate is
         whenNotPaused
         onlyRole(TRUSTED_CALLER_ROLE)
     {
-        if (phaseId == 0 || phaseId != currentPhaseId) {
+        if (phaseId == 0 || !activePhases[phaseId]) {
             revert DepositPhaseNotActive(phaseId);
         }
         Phase storage phase = phases[phaseId];
@@ -440,7 +572,7 @@ contract RapportCertificate is
 
         Phase storage phase = phases[authorization.phaseId];
         if (
-            authorization.phaseId == 0 || authorization.phaseId != currentPhaseId
+            authorization.phaseId == 0 || !activePhases[authorization.phaseId]
                 || !phase.active
         ) revert PhaseNotActive(authorization.phaseId);
         if (block.timestamp < phase.startsAt) {
@@ -451,6 +583,15 @@ contract RapportCertificate is
         }
         if (authorization.casAmount < phase.minCasDeposit) {
             revert InsufficientCasDeposit(phase.minCasDeposit, authorization.casAmount);
+        }
+
+        // Enforce prerequisite checks: the recipient must hold certificates
+        // for all prerequisite phases before minting this challenge.
+        uint256[] storage prereqs = phasePrerequisites[authorization.phaseId];
+        for (uint256 i = 0; i < prereqs.length; i++) {
+            if (certificatesByRecipientAndPhase[authorization.recipient][prereqs[i]] == 0) {
+                revert PhasePrerequisitesNotMet(authorization.phaseId, prereqs[i]);
+            }
         }
 
         uint256 existingTokenId = certificatesByRecipientAndPhase[
@@ -608,6 +749,55 @@ contract RapportCertificate is
         emit DocumentHashAttested(tokenId, documentHash, msg.sender);
     }
 
+    /// @notice Anchors the Merkle root of the certificate data tree.
+    ///         The tree leaves are: phase name, tokenId, issuedAt, recipient
+    ///         address, skillsDescription and instructions. One-time per token.
+    ///         Retrocompatible: legacy certificates keep merkleRoot = bytes32(0).
+    function attestMerkleRoot(uint256 tokenId, bytes32 merkleRoot)
+        external
+        onlyRole(ISSUER_ROLE)
+    {
+        Certificate storage certificate = _requireCertificate(tokenId);
+        if (merkleRoot == bytes32(0)) revert EmptyHash();
+        if (certificate.revoked) revert CertificateIsRevoked(tokenId);
+        if (certificateMerkleRoots[tokenId] != bytes32(0)) {
+            revert MerkleRootAlreadySet(tokenId);
+        }
+        certificateMerkleRoots[tokenId] = merkleRoot;
+        emit MerkleRootAttested(tokenId, merkleRoot, msg.sender);
+    }
+
+    /// @notice Anchors the Merkle root of the documentary proof-of-work
+    ///         evidence submitted by the user. One-time per token.
+    ///         Retrocompatible: legacy certificates keep merkleRootProof = bytes32(0).
+    function attestMerkleRootProof(uint256 tokenId, bytes32 merkleRootProof_)
+        external
+        onlyRole(ISSUER_ROLE)
+    {
+        Certificate storage certificate = _requireCertificate(tokenId);
+        if (merkleRootProof_ == bytes32(0)) revert EmptyHash();
+        if (certificate.revoked) revert CertificateIsRevoked(tokenId);
+        if (certificateMerkleRootProofs[tokenId] != bytes32(0)) {
+            revert MerkleRootProofAlreadySet(tokenId);
+        }
+        certificateMerkleRootProofs[tokenId] = merkleRootProof_;
+        emit MerkleRootProofAttested(tokenId, merkleRootProof_, msg.sender);
+    }
+
+    /// @notice Returns the proof-of-work Merkle root attested for a certificate,
+    ///         or bytes32(0) if not set (legacy certificates).
+    function getMerkleRootProof(uint256 tokenId) external view returns (bytes32) {
+        _requireCertificate(tokenId);
+        return certificateMerkleRootProofs[tokenId];
+    }
+
+    /// @notice Returns the Merkle root attested for a certificate, or bytes32(0)
+    ///         if not set (legacy certificates).
+    function getMerkleRoot(uint256 tokenId) external view returns (bytes32) {
+        _requireCertificate(tokenId);
+        return certificateMerkleRoots[tokenId];
+    }
+
     /// @notice Pays the certificate holder a one-time CAS bonus equal to the
     ///         minimum deposit configured for the certificate's phase. Extra
     ///         CAS deposited by the holder does not increase the bonus. The
@@ -660,6 +850,65 @@ contract RapportCertificate is
         return phase;
     }
 
+    /// @notice Sets prerequisite phases for a given phase. A user must hold
+    ///         certificates for all prerequisites before minting in that phase.
+    ///         Reverts if the new edges would create a cycle.
+    function setPhasePrerequisites(
+        uint256 phaseId,
+        uint256[] calldata prerequisitePhaseIds
+    ) external onlyRole(PHASE_MANAGER_ROLE) {
+        Phase storage phase = phases[phaseId];
+        if (bytes(phase.name).length == 0) revert InvalidPhase(phaseId);
+
+        for (uint256 i = 0; i < prerequisitePhaseIds.length; i++) {
+            uint256 prereqId = prerequisitePhaseIds[i];
+            if (prereqId == phaseId) revert SelfPrerequisite(phaseId);
+            if (bytes(phases[prereqId].name).length == 0) {
+                revert PrerequisitePhaseNotFound(prereqId);
+            }
+            if (_wouldCreateCycle(prereqId, phaseId, new uint256[](0))) {
+                revert PrerequisiteCycleDetected(phaseId, prereqId);
+            }
+        }
+
+        phasePrerequisites[phaseId] = prerequisitePhaseIds;
+        emit PhasePrerequisitesSet(phaseId, prerequisitePhaseIds);
+    }
+
+    /// @notice Returns the list of prerequisite phase IDs for a given phase.
+    function getPhasePrerequisites(uint256 phaseId)
+        external
+        view
+        returns (uint256[] memory)
+    {
+        return phasePrerequisites[phaseId];
+    }
+
+    /// @notice Returns true if the user holds a certificate for the given phase.
+    function hasCertificateForPhase(address user, uint256 phaseId)
+        external
+        view
+        returns (bool)
+    {
+        return certificatesByRecipientAndPhase[user][phaseId] != 0;
+    }
+
+    /// @notice Returns true if the user has certificates for all prerequisite
+    ///         phases of the given phase, meaning the challenge is unlocked.
+    function isPhaseUnlocked(address user, uint256 phaseId)
+        external
+        view
+        returns (bool)
+    {
+        uint256[] storage prereqs = phasePrerequisites[phaseId];
+        for (uint256 i = 0; i < prereqs.length; i++) {
+            if (certificatesByRecipientAndPhase[user][prereqs[i]] == 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     function getCertificate(uint256 tokenId)
         external
         view
@@ -690,7 +939,8 @@ contract RapportCertificate is
             address account,
             uint256 currentCasBalance,
             bytes32 metadataHash,
-            bytes32 documentHash
+            bytes32 documentHash,
+            bytes32 merkleRootProof
         )
     {
         Certificate storage certificate = _requireCertificate(tokenId);
@@ -701,7 +951,8 @@ contract RapportCertificate is
             certificate.tokenBoundAccount,
             casToken.balanceOf(certificate.tokenBoundAccount),
             certificate.metadataHash,
-            certificate.documentHash
+            certificate.documentHash,
+            certificateMerkleRootProofs[tokenId]
         );
     }
 
@@ -750,6 +1001,15 @@ contract RapportCertificate is
         return baseTokenURI;
     }
 
+    /// @notice Updates the base URI used by `tokenURI`.
+    /// @dev Restricted to DEFAULT_ADMIN_ROLE. Allows correcting the
+    ///      metadata endpoint after domain migration without redeploying
+    ///      tokens. Emits `BaseURIUpdated` for auditability.
+    function setBaseURI(string calldata newBaseURI) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        emit BaseURIUpdated(baseTokenURI, newBaseURI);
+        baseTokenURI = newBaseURI;
+    }
+
     function _update(address to, uint256 tokenId, address auth)
         internal
         override
@@ -788,5 +1048,33 @@ contract RapportCertificate is
     {
         if (_ownerOf(tokenId) == address(0)) revert CertificateNotFound(tokenId);
         return certificates[tokenId];
+    }
+
+    /// @dev DFS cycle detection: returns true if `target` is reachable from
+    ///      `current` by following prerequisite edges. If so, adding an edge
+    ///      from `target` to `current` would close a cycle.
+    function _wouldCreateCycle(
+        uint256 current,
+        uint256 target,
+        uint256[] memory visited
+    ) internal view returns (bool) {
+        if (current == target) return true;
+
+        for (uint256 i = 0; i < visited.length; i++) {
+            if (visited[i] == current) return false;
+        }
+
+        uint256[] storage prereqs = phasePrerequisites[current];
+        for (uint256 i = 0; i < prereqs.length; i++) {
+            uint256[] memory newVisited = new uint256[](visited.length + 1);
+            for (uint256 j = 0; j < visited.length; j++) {
+                newVisited[j] = visited[j];
+            }
+            newVisited[visited.length] = current;
+            if (_wouldCreateCycle(prereqs[i], target, newVisited)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

@@ -20,12 +20,16 @@
  *   npm run cas:db:stats
  */
 
-import { ethers } from "ethers";
+import { ethers } from "agentic_space_commons";
 import {
   getDB, closeDB, setAddressLabel as setLabel, setNotes, getAddress, getAllAddresses,
   getAddressesByType, searchAddresses, getTransactionsByAddress,
-  getTransactionCount, getLabelMap,
+  getTransactionCount, getLabelMap, resolveShortAddress,
 } from "../utils/cas_database";
+import {
+  buildHtmlTable, buildHtmlPage, buildSummaryGrid,
+  saveAndOpenReport, type TableColumn, type SummaryItem,
+} from "../utils/html_report";
 
 function fmt(s: string): string {
   return Number(ethers.formatUnits(BigInt(s || "0"), 18)).toLocaleString("pt-BR");
@@ -45,7 +49,8 @@ async function main(): Promise<void> {
     switch (cmd) {
       case "label": {
         if (args.length < 3) { console.error("Uso: label <address> <name>"); break; }
-        const [addr, ...nameParts] = args.slice(1);
+        const [addrRaw, ...nameParts] = args.slice(1);
+        const addr = resolveShortAddress(addrRaw) ?? addrRaw;
         const name = nameParts.join(" ");
         if (name.length > 100) { console.error("Nome excede 100 caracteres"); break; }
         setLabel(addr, name);
@@ -55,7 +60,8 @@ async function main(): Promise<void> {
 
       case "notes": {
         if (args.length < 3) { console.error("Uso: notes <address> <text>"); break; }
-        const [addr, ...textParts] = args.slice(1);
+        const [addrRaw, ...textParts] = args.slice(1);
+        const addr = resolveShortAddress(addrRaw) ?? addrRaw;
         setNotes(addr, textParts.join(" "));
         console.log(`✅ Notas adicionadas: ${addr}`);
         break;
@@ -69,19 +75,32 @@ async function main(): Promise<void> {
           addresses = getAllAddresses();
         }
         if (addresses.length === 0) { console.log("Nenhum endereço. Rode 'npm run sync:cas:db' primeiro."); break; }
-        console.log(`\n  ${addresses.length} endereços:\n`);
-        console.log("  Address".padEnd(44) + "Label".padEnd(30) + "Type".padEnd(10) + "Received".padEnd(20) + "Txs");
-        console.log("  " + "-".repeat(110));
-        for (const a of addresses) {
-          const label = a.label || "(sem nome)";
-          console.log(
-            `  ${a.address}`.padEnd(44) +
-            label.padEnd(30) +
-            a.type.padEnd(10) +
-            fmt(a.total_received).padEnd(20) +
-            String(a.tx_count),
-          );
-        }
+
+        const summary: SummaryItem[] = [
+          { label: "Total de endereços", value: String(addresses.length) },
+        ];
+
+        const columns: TableColumn[] = [
+          { header: "Endereço", key: "address", mono: true, link: (r) => `https://polygonscan.com/address/${r.address}` },
+          { header: "Label", key: "label" },
+          { header: "Tipo", key: "type", render: (r) => `<span class="badge badge-info">${r.type}</span>` },
+          { header: "Recebido (CAS)", key: "received", mono: true },
+          { header: "Txs", key: "txs", mono: true },
+        ];
+
+        const rows = addresses.map(a => ({
+          address: a.address,
+          label: a.label || "(sem nome)",
+          type: a.type,
+          received: fmt(a.total_received),
+          txs: String(a.tx_count),
+        }));
+
+        const body = buildSummaryGrid(summary) +
+          `<div class="card">${buildHtmlTable(columns, rows)}</div>`;
+        const html = buildHtmlPage("Endereços CAS — Listagem", `${addresses.length} endereços cadastrados`, body);
+        const ts = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
+        saveAndOpenReport(`cas_addresses_${ts}.html`, html);
         break;
       }
 
@@ -89,34 +108,69 @@ async function main(): Promise<void> {
         if (args.length < 2) { console.error("Uso: search <query>"); break; }
         const results = searchAddresses(args.slice(1).join(" "));
         if (results.length === 0) { console.log("Nenhum resultado."); break; }
-        console.log(`\n  ${results.length} resultados:\n`);
-        for (const a of results) {
-          console.log(`  ${a.address}  ${a.label || "(sem nome)"}  (${a.type})  txs: ${a.tx_count}`);
-        }
+
+        const columns: TableColumn[] = [
+          { header: "Endereço", key: "address", mono: true, link: (r) => `https://polygonscan.com/address/${r.address}` },
+          { header: "Label", key: "label" },
+          { header: "Tipo", key: "type", render: (r) => `<span class="badge badge-info">${r.type}</span>` },
+          { header: "Txs", key: "txs", mono: true },
+        ];
+
+        const rows = results.map(a => ({
+          address: a.address,
+          label: a.label || "(sem nome)",
+          type: a.type,
+          txs: String(a.tx_count),
+        }));
+
+        const body = `<div class="card"><h2>Resultados da busca: "${args.slice(1).join(" ")}"</h2>${buildHtmlTable(columns, rows)}</div>`;
+        const html = buildHtmlPage("Busca CAS — Resultados", `${results.length} resultados encontrados`, body);
+        const ts = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
+        saveAndOpenReport(`cas_search_${ts}.html`, html);
         break;
       }
 
       case "txs": {
         if (args.length < 2) { console.error("Uso: txs <address> [limit]"); break; }
-        const addr = args[1];
+        const addr = resolveShortAddress(args[1]) ?? args[1];
         const limit = args[2] ? parseInt(args[2], 10) : 20;
         const txs = getTransactionsByAddress(addr, limit);
         if (txs.length === 0) { console.log("Nenhuma transação."); break; }
-        console.log(`\n  ${txs.length} transações para ${addr}:\n`);
-        for (const t of txs) {
+
+        const columns: TableColumn[] = [
+          { header: "Data", key: "date", mono: true },
+          { header: "Direção", key: "dir", render: (r) => r.dir === "OUT" ? '<span class="badge badge-warn">OUT</span>' : '<span class="badge badge-ok">IN</span>' },
+          { header: "Valor (CAS)", key: "val", mono: true },
+          { header: "Contraparte", key: "other", mono: true, link: (r) => `https://polygonscan.com/address/${r.other}` },
+          { header: "TX Hash", key: "hash", mono: true, link: (r) => `https://polygonscan.com/tx/${r.fullHash}` },
+          { header: "Tipo", key: "mint", render: (r) => r.mint === "true" ? '<span class="badge badge-info">MINT</span>' : "" },
+        ];
+
+        const rows = txs.map(t => {
           const date = new Date(t.timestamp * 1000).toISOString().replace("T", " ").slice(0, 19);
-          const dir = t.from_address === addr.toLowerCase() ? "OUT" : "IN ";
-          const other = t.from_address === addr.toLowerCase() ? t.to_address : t.from_address;
-          const val = fmt(t.value);
-          const mint = t.is_mint ? " [MINT]" : "";
-          console.log(`  ${date}  ${dir}  ${val.padEnd(20)} CAS  ${other}${mint}  tx:${t.tx_hash.slice(0, 16)}…`);
-        }
+          const isOut = t.from_address === addr.toLowerCase();
+          return {
+            date,
+            dir: isOut ? "OUT" : "IN",
+            val: fmt(t.value),
+            other: isOut ? t.to_address : t.from_address,
+            hash: t.tx_hash.slice(0, 16) + "...",
+            fullHash: t.tx_hash,
+            mint: t.is_mint ? "true" : "false",
+          };
+        });
+
+        const body = `<div class="card"><h2>Transações de <code>${addr}</code></h2>${buildHtmlTable(columns, rows)}</div>`;
+        const html = buildHtmlPage("Transações CAS", `${txs.length} transações para ${addr}`, body);
+        const ts = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
+        saveAndOpenReport(`cas_txs_${ts}.html`, html);
         break;
       }
 
       case "show": {
         if (args.length < 2) { console.error("Uso: show <address>"); break; }
-        const a = getAddress(args[1]);
+        const resolved = resolveShortAddress(args[1]);
+        const a = resolved ? getAddress(resolved) : getAddress(args[1]);
         if (!a) { console.log("Endereço não encontrado."); break; }
         console.log(`\n  Endereço: ${a.address}`);
         console.log(`  Label:    ${a.label || "(sem nome)"}`);
@@ -155,10 +209,21 @@ async function main(): Promise<void> {
       case "labels": {
         const map = getLabelMap();
         if (map.size === 0) { console.log("Nenhum label definido."); break; }
-        console.log(`\n  ${map.size} labels:\n`);
+
+        const columns: TableColumn[] = [
+          { header: "Endereço", key: "address", mono: true, link: (r) => `https://polygonscan.com/address/${r.address}` },
+          { header: "Label", key: "label" },
+        ];
+
+        const rows: Record<string, string>[] = [];
         for (const [addr, label] of map) {
-          console.log(`  ${addr}  ${label}`);
+          rows.push({ address: addr, label });
         }
+
+        const body = `<div class="card"><h2>Labels cadastrados</h2>${buildHtmlTable(columns, rows)}</div>`;
+        const html = buildHtmlPage("Labels CAS", `${map.size} labels definidos`, body);
+        const ts = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
+        saveAndOpenReport(`cas_labels_${ts}.html`, html);
         break;
       }
 

@@ -14,9 +14,13 @@ import * as dotenv from "dotenv";
 import * as path from "path";
 import {
   getDB, closeDB, insertTransaction, upsertAddress,
-  getSyncState, setSyncState, recalculateAllAddressStats,
-  getTransactionCount, getLastBlockNumber, getLabelMap,
+  setSyncState, recalculateAllAddressStats,
+  getTransactionCount, getLastBlockNumber,
 } from "../utils/cas_database";
+import {
+  buildHtmlTable, buildHtmlPage, buildSummaryGrid,
+  saveAndOpenReport, type TableColumn, type SummaryItem,
+} from "../utils/html_report";
 
 const SC_ROOT = path.resolve(__dirname, "..", "..");
 dotenv.config({ path: path.join(SC_ROOT, ".env") });
@@ -31,6 +35,7 @@ function log(level: LogLevel, fn: string, msg: string, p?: Record<string, unknow
 const CHAIN_ID = 137;
 const API_BASES = ["https://api.etherscan.io/v2/api", "https://api.polygonscan.com/api"];
 const ZERO_ADDR = "0x0000000000000000000000000000000000000000";
+let pinnedBase: string | null = null;
 
 interface TokenTransfer {
   hash: string;
@@ -69,8 +74,11 @@ async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Respons
 async function scanRequest(params: Record<string, string>): Promise<unknown> {
   const apiKey = process.env.POLYGONSCAN_API_KEY ?? "";
   let lastErr: Error | null = null;
+  const bases = pinnedBase
+    ? [pinnedBase, ...API_BASES.filter(b => b !== pinnedBase)]
+    : API_BASES;
 
-  for (const base of API_BASES) {
+  for (const base of bases) {
     const url = new URL(base);
     if (base.includes("etherscan.io/v2")) url.searchParams.set("chainid", String(CHAIN_ID));
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
@@ -97,8 +105,10 @@ async function scanRequest(params: Record<string, string>): Promise<unknown> {
           throw new Error(msg);
         }
         const body = (await res.json()) as { status: string; message: string; result: unknown };
-        if (body.status === "1" || (body.status === "0" && body.message === "No transactions found"))
+        if (body.status === "1" || (body.status === "0" && body.message === "No transactions found")) {
+          if (pinnedBase === null) pinnedBase = base;
           return body.result;
+        }
         if (isTransientError(0, body.message) && attempt < MAX_RETRIES) {
           const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
           log("WARN", "scanRequest", "API rate limited, retrying", {
@@ -170,20 +180,26 @@ async function main(): Promise<void> {
   }
   log("OK", "main", "Endereços conhecidos do .env inseridos", { count: Object.keys(envLabels).length });
 
-  // Buscar todas as transferências
-  log("INFO", "main", "Buscando transferências no Polygonscan...");
+  // Buscar todas as transferências usando paginação por bloco (incremental)
+  // A API Etherscan/Polygonscan limita 10.000 registros por consulta com page/offset.
+  // Paginar por startblock/endblock garante consistência e permite sync incremental.
+  const startBlock = lastBlock > 0 ? lastBlock + 1 : 0;
+  const MAX_BLOCK = 999_999_999; // "latest" na API
+  log("INFO", "main", "Buscando transferências no Polygonscan (paginação por bloco)", { startBlock });
+
   const transfers: TokenTransfer[] = [];
-  let page = 1;
+  let currentStartBlock = startBlock;
   for (;;) {
     let result: TokenTransfer[] | string;
     try {
       result = (await scanRequest({
         module: "account", action: "tokentx", contractaddress: casTokenAddress,
-        page: String(page), offset: "1000", sort: "asc",
+        startblock: String(currentStartBlock), endblock: String(MAX_BLOCK),
+        page: "1", offset: "10000", sort: "asc",
       })) as TokenTransfer[] | string;
     } catch (err) {
-      log("ERROR", "main", "Falha ao buscar página após retries", {
-        page, error: (err as Error).message, collectedSoFar: transfers.length,
+      log("ERROR", "main", "Falha ao buscar bloco após retries", {
+        startBlock: currentStartBlock, error: (err as Error).message, collectedSoFar: transfers.length,
       });
       if (transfers.length > 0) {
         log("WARN", "main", "Prosseguindo com transferências parciais", { total: transfers.length });
@@ -193,10 +209,12 @@ async function main(): Promise<void> {
     }
     if (!Array.isArray(result) || result.length === 0) break;
     transfers.push(...result);
-    log("DEBUG", "main", "Página coletada", { page, count: result.length, total: transfers.length });
-    if (result.length < 1000) break;
-    page += 1;
-    if (page > 100) { log("WARN", "main", "Limite de 100 páginas"); break; }
+    const lastTxBlock = parseInt(result[result.length - 1].blockNumber, 10);
+    log("DEBUG", "main", "Bloco coletado", {
+      startBlock: currentStartBlock, count: result.length, total: transfers.length, lastTxBlock,
+    });
+    if (result.length < 10_000) break;
+    currentStartBlock = lastTxBlock + 1;
     await sleep(300);
   }
   log("OK", "main", "Transferências coletadas", { total: transfers.length });
@@ -245,23 +263,52 @@ async function main(): Promise<void> {
     labeled: labeledCount,
   });
 
-  // Listar endereços sem label para o usuário nomear
+  // Gerar relatório HTML com endereços sem label e nomeados
   const unlabeled = db.prepare("SELECT address, total_received, tx_count FROM addresses WHERE label = '' ORDER BY tx_count DESC LIMIT 20").all() as { address: string; total_received: string; tx_count: number }[];
-  if (unlabeled.length > 0) {
-    console.log("\n  Endereços sem nome (use 'npm run cas:db:label' para nomear):");
-    for (const u of unlabeled) {
-      const received = Number(ethers.formatUnits(BigInt(u.total_received || "0"), 18));
-      console.log(`    ${u.address}  recebido: ${received.toLocaleString("pt-BR")} CAS  txs: ${u.tx_count}`);
-    }
-  }
-
-  // Listar endereços nomeados
   const labeled = db.prepare("SELECT address, label, type FROM addresses WHERE label != '' ORDER BY label").all() as { address: string; label: string; type: string }[];
-  if (labeled.length > 0) {
-    console.log("\n  Endereços nomeados:");
-    for (const l of labeled) {
-      console.log(`    ${l.address}  ${l.label}  (${l.type})`);
+
+  if (unlabeled.length > 0 || labeled.length > 0) {
+    const summary: SummaryItem[] = [
+      { label: "Novas TXs", value: String(newTxCount) },
+      { label: "Total TXs", value: String(afterCount) },
+      { label: "Endereços", value: String(addressCount) },
+      { label: "Nomeados", value: String(labeledCount) },
+      { label: "Sem nome (top 20)", value: String(unlabeled.length) },
+    ];
+
+    let body = buildSummaryGrid(summary);
+
+    if (unlabeled.length > 0) {
+      const unlabeledCols: TableColumn[] = [
+        { header: "Endereço", key: "address", mono: true, link: (r) => `https://polygonscan.com/address/${r.address}` },
+        { header: "Recebido (CAS)", key: "received", mono: true },
+        { header: "Txs", key: "txs", mono: true },
+      ];
+      const unlabeledRows = unlabeled.map(u => ({
+        address: u.address,
+        received: Number(ethers.formatUnits(BigInt(u.total_received || "0"), 18)).toLocaleString("pt-BR"),
+        txs: String(u.tx_count),
+      }));
+      body += `<div class="card"><h2>Endereços sem nome (top 20 por TXs)</h2><p class="text-muted">Use <code>npm run cas:db:label -- &lt;address&gt; "Nome"</code> para nomear.</p>${buildHtmlTable(unlabeledCols, unlabeledRows)}</div>`;
     }
+
+    if (labeled.length > 0) {
+      const labeledCols: TableColumn[] = [
+        { header: "Endereço", key: "address", mono: true, link: (r) => `https://polygonscan.com/address/${r.address}` },
+        { header: "Label", key: "label" },
+        { header: "Tipo", key: "type", render: (r) => `<span class="badge badge-info">${r.type}</span>` },
+      ];
+      const labeledRows = labeled.map(l => ({
+        address: l.address,
+        label: l.label,
+        type: l.type,
+      }));
+      body += `<div class="card"><h2>Endereços nomeados</h2>${buildHtmlTable(labeledCols, labeledRows)}</div>`;
+    }
+
+    const html = buildHtmlPage("Sync CAS — Resultado", `Transferências: ${transfers.length} | Novas TXs: ${newTxCount} | Total: ${afterCount}`, body);
+    const ts = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
+    saveAndOpenReport(`cas_sync_result_${ts}.html`, html);
   }
 
   setSyncState("last_sync", new Date().toISOString());

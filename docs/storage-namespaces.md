@@ -31,6 +31,56 @@ Cada domínio do Diamond possui seu próprio namespace de storage, acessado via 
 | `GasPromotionStorage` | `keccak256("agentic.space.diamond.gaspromotion.storage")` | Promoções de gas |
 | `ProjectStorage` | `keccak256("agentic.space.diamond.project.storage")` | Projetos |
 
+## RapportCertificateUpgradeable (UUPS proxy — standalone)
+
+**Caminho:** `contracts/certificate/RapportCertificateStorage.sol`
+
+O contrato de certificados não usa Diamond Storage; é um proxy UUPS
+independente com storage próprio em `RapportCertificateStorage.sol`. O
+storage é compartilhado entre o proxy principal
+(`RapportCertificateUpgradeable`) e o facet administrativo
+(`RapportCertificatePhaseAdminFacet`) via herança, garantindo que o
+`delegatecall` do fallback acesse os mesmos slots.
+
+### Struct `Phase`
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `name` | `string` | Nome imutável da fase |
+| `templateHash` | `bytes32` | Hash da versão de layout |
+| `minCasDeposit` | `uint256` | Aporte mínimo em CAS |
+| `startsAt` | `uint256` | Timestamp de início (0 = imediato) |
+| `endsAt` | `uint256` | Timestamp de fim (0 = sem fim) |
+| `minted` | `uint256` | Total já emitido na fase |
+| `active` | `bool` | Fase ativa para emissão |
+| `skillsDescription` | `string` | Descrição das habilidades |
+| `instructions` | `string` | Instruções para o candidato |
+| `extraFeeTypeId` | `uint256` | Tipo de taxa extra no PaymentFacet (0 = nenhuma) |
+| `tbaRebateBps` | `uint256` | Rebate TBA em bps (0–10000) |
+| `allowMultipleIssuance` | `bool` | Permite múltiplas emissões por usuário |
+| `maxPerRecipient` | `uint256` | Máximo por usuário (quando multi-issuance) |
+| `maxTotalSupply` | `uint256` | Limite global da fase (quando multi-issuance) |
+
+### Mappings principais
+
+- `phases[uint256] → Phase` — phaseId → Phase
+- `certificates[uint256] → Certificate` — tokenId → Certificate
+- `certificatesByRecipientAndPhase[address][uint256] → uint256` — (recipient, phaseId) → tokenId (single-issuance: último emitido)
+- `phasePrerequisites[uint256] → uint256[]` — phaseId → prerequisite phaseIds
+- `activePhases[uint256] → bool` — phaseId → ativa
+- `phaseAdminFacet` — endereço do facet administrativo (setado via `setPhaseAdminFacet`)
+
+### Segurança de upgrade
+
+Os 3 novos campos (`allowMultipleIssuance`, `maxPerRecipient`,
+`maxTotalSupply`) foram **appendados ao final** do struct `Phase`, seguindo o
+mesmo padrão seguro usado quando `extraFeeTypeId`/`tbaRebateBps` foram
+adicionados. Cada `Phase` ocupa uma região contígua de storage keyed por
+`phaseId`, então campos novos em posições finais não corrompem dados
+existentes. O teste `RapportCertificateUpgradeSafety.test.ts` simula o
+upgrade real (bytecode verificado em mainnet → novo split) e confirma que
+fases, certificados e depósitos CAS sobrevivem intactos.
+
 ## AgentStorage
 
 **Caminho:** `contracts/diamond/storage/AgentStorage.sol`

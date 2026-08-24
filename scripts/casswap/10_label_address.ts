@@ -35,6 +35,7 @@ import {
   setTransactionLabel,
   setTransactionDescription,
   getTransactionsByHash,
+  resolveShortAddress,
 } from "../utils/cas_database";
 
 // ── Env loading ───────────────────────────────────────────────────────
@@ -129,12 +130,16 @@ async function main(): Promise<void> {
   getDB();
 
   try {
-    if (isTxHash(identifier)) {
-      await labelTransaction(identifier, name, label, description);
-    } else if (isAddress(identifier)) {
-      await labelAddress(identifier, name, label, description);
+    // Try resolving shortened address first (e.g. 0xc590…c02b)
+    const resolvedAddr = resolveShortAddress(identifier);
+    const effectiveIdentifier = resolvedAddr ?? identifier;
+
+    if (isTxHash(effectiveIdentifier)) {
+      await labelTransaction(effectiveIdentifier, name, label, description);
+    } else if (isAddress(effectiveIdentifier)) {
+      await labelAddress(effectiveIdentifier, name, label, description);
     } else {
-      log("ERROR", "main", "Identificador inválido. Deve ser um endereço (0x + 40 hex) ou hash de transação (0x + 64 hex)", {
+      log("ERROR", "main", "Identificador inválido. Deve ser um endereço (0x + 40 hex), endereço encurtado (0x……), ou hash de transação (0x + 64 hex)", {
         identifier: identifier.slice(0, 20) + "...",
         length: identifier.length,
       });

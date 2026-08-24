@@ -601,15 +601,19 @@ describe("RapportCertificate (ERC-721 + ERC-6551)", function () {
           ethers.parseEther("150"),
           0,
           0,
+          "Habilidades de apoio e comunidade",
+          "Envie screenshots e código por e-mail",
         ),
       ).to.emit(certificate, "PhaseCreated");
       await certificate.activatePhase(2);
 
+      // In the challenge model, both phases remain active in parallel.
       const phaseOne = await certificate.getPhase(1);
       const phaseTwo = await certificate.getPhase(2);
-      expect(phaseOne.active).to.equal(false);
+      expect(phaseOne.active).to.equal(true);
       expect(phaseTwo.active).to.equal(true);
-      expect(await certificate.currentPhaseId()).to.equal(2);
+      expect(await certificate.activePhases(1)).to.equal(true);
+      expect(await certificate.activePhases(2)).to.equal(true);
 
       const authorization = await buildAuthorization(certificate, user.address, {
         phaseId: 2n,
@@ -629,8 +633,12 @@ describe("RapportCertificate (ERC-721 + ERC-6551)", function () {
       expect(await certificate.ownerOf(2)).to.equal(user.address);
       expect(await certificate.certificateOf(user.address, 2)).to.equal(2);
 
-      await certificate.connect(admin).deactivateCurrentPhase();
-      expect(await certificate.currentPhaseId()).to.equal(0);
+      // Deactivate only phase 2; phase 1 remains active.
+      await certificate.connect(admin).deactivatePhase(2);
+      expect(await certificate.activePhases(2)).to.equal(false);
+      expect(await certificate.activePhases(1)).to.equal(true);
+      const phaseTwoAfter = await certificate.getPhase(2);
+      expect(phaseTwoAfter.active).to.equal(false);
     });
 
     it("pauses issuance without freezing access to existing TBA assets", async function () {
@@ -649,6 +657,157 @@ describe("RapportCertificate (ERC-721 + ERC-6551)", function () {
       await certificate.connect(user).depositCasForMint(authorization.phaseId);
       await certificate.connect(user).mintCertificate(authorization, issuer.address, signature);
       expect(await certificate.ownerOf(1)).to.equal(user.address);
+    });
+  });
+
+  describe("challenge prerequisites", function () {
+    it("sets prerequisites and reports unlock status correctly", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { certificate, admin, user } = fixture;
+
+      // Create phase 2 and set phase 1 as prerequisite.
+      const templateHash = ethers.keccak256(ethers.toUtf8Bytes("challenge-2"));
+      await certificate.createPhase(
+        "Desafio Avançado",
+        templateHash,
+        ethers.parseEther("100"),
+        0,
+        0,
+        "Habilidades avançadas",
+        "Envie provas por e-mail",
+      );
+      await certificate.setPhasePrerequisites(2, [1]);
+
+      expect(await certificate.getPhasePrerequisites(2)).to.deep.equal([1n]);
+
+      // User has no certificate for phase 1 yet → locked.
+      expect(await certificate.isPhaseUnlocked(user.address, 2)).to.equal(false);
+      expect(await certificate.hasCertificateForPhase(user.address, 1)).to.equal(false);
+
+      // Mint certificate for phase 1.
+      await mintDefault(fixture);
+
+      // Now phase 2 is unlocked.
+      expect(await certificate.hasCertificateForPhase(user.address, 1)).to.equal(true);
+      expect(await certificate.isPhaseUnlocked(user.address, 2)).to.equal(true);
+    });
+
+    it("prevents minting when prerequisites are not met", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { certificate, casToken, issuer, user } = fixture;
+
+      const templateHash = ethers.keccak256(ethers.toUtf8Bytes("gated-challenge"));
+      await certificate.createPhase(
+        "Desafio Gated",
+        templateHash,
+        ethers.parseEther("100"),
+        0,
+        0,
+        "",
+        "",
+      );
+      await certificate.setPhasePrerequisites(2, [1]);
+      await certificate.activatePhase(2);
+
+      // User has NOT minted phase 1 yet.
+      const authorization = await buildAuthorization(certificate, user.address, {
+        phaseId: 2n,
+        casAmount: ethers.parseEther("100"),
+        seed: "gated",
+      });
+      const signature = await signAuthorization(certificate, issuer, authorization);
+      const certAddr = await certificate.getAddress();
+      await casToken.connect(user).transfer(certAddr, ethers.parseEther("100"));
+      await certificate.connect(user).depositCasForMint(2n);
+
+      await expect(
+        certificate.connect(user).mintCertificate(authorization, issuer.address, signature),
+      ).to.be.revertedWithCustomError(certificate, "PhasePrerequisitesNotMet");
+    });
+
+    it("rejects cyclic prerequisite dependencies", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { certificate } = fixture;
+
+      // Create phases 2 and 3.
+      const hash2 = ethers.keccak256(ethers.toUtf8Bytes("c2"));
+      const hash3 = ethers.keccak256(ethers.toUtf8Bytes("c3"));
+      await certificate.createPhase("C2", hash2, ethers.parseEther("10"), 0, 0, "", "");
+      await certificate.createPhase("C3", hash3, ethers.parseEther("10"), 0, 0, "", "");
+
+      // 2 requires 1, 3 requires 2.
+      await certificate.setPhasePrerequisites(2, [1]);
+      await certificate.setPhasePrerequisites(3, [2]);
+
+      // Setting 1 requires 3 would create cycle: 1→3→2→1.
+      await expect(
+        certificate.setPhasePrerequisites(1, [3]),
+      ).to.be.revertedWithCustomError(certificate, "PrerequisiteCycleDetected");
+    });
+
+    it("rejects self-prerequisite and non-existent prerequisite", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { certificate } = fixture;
+
+      const hash2 = ethers.keccak256(ethers.toUtf8Bytes("self-test"));
+      await certificate.createPhase("SelfTest", hash2, ethers.parseEther("10"), 0, 0, "", "");
+
+      await expect(
+        certificate.setPhasePrerequisites(2, [2]),
+      ).to.be.revertedWithCustomError(certificate, "SelfPrerequisite");
+
+      await expect(
+        certificate.setPhasePrerequisites(2, [99]),
+      ).to.be.revertedWithCustomError(certificate, "PrerequisitePhaseNotFound");
+    });
+
+    it("updates phase metadata via updatePhaseMetadata", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { certificate } = fixture;
+
+      const hash2 = ethers.keccak256(ethers.toUtf8Bytes("meta-test"));
+      await certificate.createPhase("Meta", hash2, ethers.parseEther("10"), 0, 0, "", "");
+
+      await expect(
+        certificate.updatePhaseMetadata(2, "New skills", "New instructions"),
+      ).to.emit(certificate, "PhaseMetadataUpdated");
+
+      const phase = await certificate.getPhase(2);
+      expect(phase.skillsDescription).to.equal("New skills");
+      expect(phase.instructions).to.equal("New instructions");
+    });
+
+    it("supports multiple parallel active phases", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { certificate } = fixture;
+
+      const hash2 = ethers.keccak256(ethers.toUtf8Bytes("parallel-2"));
+      const hash3 = ethers.keccak256(ethers.toUtf8Bytes("parallel-3"));
+      await certificate.createPhase("P2", hash2, ethers.parseEther("10"), 0, 0, "", "");
+      await certificate.createPhase("P3", hash3, ethers.parseEther("10"), 0, 0, "", "");
+
+      await certificate.activatePhase(2);
+      await certificate.activatePhase(3);
+
+      expect(await certificate.activePhases(1)).to.equal(true);
+      expect(await certificate.activePhases(2)).to.equal(true);
+      expect(await certificate.activePhases(3)).to.equal(true);
+
+      // Deactivating one doesn't affect others.
+      await certificate.deactivatePhase(2);
+      expect(await certificate.activePhases(2)).to.equal(false);
+      expect(await certificate.activePhases(1)).to.equal(true);
+      expect(await certificate.activePhases(3)).to.equal(true);
+    });
+
+    it("rejects activating an already active phase", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { certificate } = fixture;
+
+      // Phase 1 is already active from constructor.
+      await expect(
+        certificate.activatePhase(1),
+      ).to.be.revertedWithCustomError(certificate, "PhaseAlreadyActive");
     });
   });
 

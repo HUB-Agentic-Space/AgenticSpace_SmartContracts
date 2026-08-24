@@ -1,5 +1,5 @@
 import { ethers } from "hardhat";
-import type { ContractFactory, Signer, Contract, TransactionResponse, TransactionReceipt } from "ethers";
+import type { ContractFactory, Signer, Contract, TransactionResponse, TransactionReceipt } from "agentic_space_commons";
 
 // ── Formatting helpers ────────────────────────────────────────────────
 

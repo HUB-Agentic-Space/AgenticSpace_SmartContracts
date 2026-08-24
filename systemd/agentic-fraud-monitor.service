@@ -1,0 +1,16 @@
+[Unit]
+Description=Agentic Space Daily Fraud Monitor
+After=network.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/opt/agentic-space/.env
+WorkingDirectory=/opt/agentic-space/smartcontracts
+ExecStart=/usr/bin/node node_modules/.bin/hardhat run scripts/22_daily_fraud_monitor.ts --network polygon
+User=agentic
+Group=agentic
+StandardOutput=append:/var/log/agentic-space/fraud-monitor.log
+StandardError=append:/var/log/agentic-space/fraud-monitor-error.log
+
+[Install]
+WantedBy=multi-user.target

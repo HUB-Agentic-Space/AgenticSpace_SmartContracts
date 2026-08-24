@@ -36,6 +36,44 @@ const config: HardhatUserConfig = {
         },
       },
     ],
+    overrides: {
+      "contracts/certificate/RapportCertificateUpgradeable.sol": {
+        version: "0.8.28",
+        settings: {
+          viaIR: true,
+          optimizer: {
+            enabled: true,
+            runs: 1,
+          },
+          evmVersion: "cancun",
+        },
+      },
+      "contracts/certificate/RapportCertificatePhaseAdminFacet.sol": {
+        version: "0.8.28",
+        settings: {
+          viaIR: true,
+          optimizer: {
+            enabled: true,
+            runs: 1,
+          },
+          evmVersion: "cancun",
+        },
+      },
+      // Test-only fixture mirroring the real mainnet-verified bytecode
+      // settings (Polygonscan: v0.8.28, optimizer enabled, 1 run, cancun) —
+      // needed so it fits under EIP-170 for upgrade-safety tests.
+      "contracts/test-fixtures/RapportCertificateUpgradeableDeployedV0.sol": {
+        version: "0.8.28",
+        settings: {
+          viaIR: true,
+          optimizer: {
+            enabled: true,
+            runs: 1,
+          },
+          evmVersion: "cancun",
+        },
+      },
+    },
   },
   networks: {
     hardhat: {

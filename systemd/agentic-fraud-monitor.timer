@@ -1,0 +1,9 @@
+[Unit]
+Description=Run Agentic Space Daily Fraud Monitor at 23:59
+
+[Timer]
+OnCalendar=*-*-* 23:59:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

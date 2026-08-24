@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "payment-facet.md",
+                "file": "README.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "payment-facet"
+              "title": "README"
             }
           }
         ]
@@ -185,6 +185,7 @@
   },
   "active": "98899e0b6522dbc5",
   "lastOpenFiles": [
+    "payment-facet.md",
     "cas-migration.md",
     "mainnet-deploy.md",
     "liquidity-lock.md",
@@ -195,7 +196,6 @@
     "infrastructure-fund.md",
     "cas-token.md",
     "gas-promotion.md",
-    "payment-facet.md",
     "README.md",
     "user-registry.md",
     "storage-namespaces.md",

@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Snapshot de Liquidez — 2026-07-28T20:54:52.060Z</title>
+<style>
+  :root {
+    --color-primary: #F05F40;
+    --color-primary-hover: #eb3812;
+    --color-dark: #222222;
+    --color-light: #ffffff;
+    --color-accent-gold: #fcc650;
+    --color-accent-bronze: #cc7501;
+    --color-accent-wine: #712d23;
+    --color-accent-coral: #ce6e6d;
+    --color-accent-peach: #f7d4ca;
+    --color-accent-deep-black: #070404;
+    --color-bg-main: var(--color-dark);
+    --color-bg-card: var(--color-accent-wine);
+    --color-text-main: var(--color-light);
+    --color-text-muted: var(--color-accent-peach);
+    --color-border: rgba(255, 255, 255, 0.15);
+    --color-link: var(--color-accent-gold);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--color-bg-main);
+    color: var(--color-text-main);
+    min-height: 100vh;
+    padding: 24px;
+    line-height: 1.5;
+  }
+  h1 { font-size: 1.6rem; color: var(--color-primary); margin-bottom: 4px; }
+  h2 { font-size: 1.2rem; color: var(--color-accent-gold); margin: 24px 0 12px; }
+  h3 { font-size: 1rem; color: var(--color-link); margin: 16px 0 8px; }
+  .sub { color: var(--color-text-muted); font-size: 0.85rem; margin-bottom: 16px; }
+  .muted { color: var(--color-text-muted); font-size: 0.8rem; }
+  code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.85rem; color: var(--color-accent-peach); background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 4px; }
+  .kpis { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
+  .kpi { background: var(--color-bg-card); border: 1px solid var(--color-border); border-radius: 10px; padding: 14px 18px; min-width: 140px; flex: 1; }
+  .kpi-val { font-size: 1.4rem; font-weight: 700; }
+  .kpi-unit { font-size: 0.75rem; color: var(--color-text-muted); margin-top: 2px; }
+  .kpi-label { font-size: 0.75rem; color: var(--color-text-muted); margin-top: 4px; }
+  .card { background: var(--color-bg-card); border: 1px solid var(--color-border); border-radius: 12px; padding: 18px; margin-bottom: 16px; }
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th { text-align: left; padding: 8px 10px; border-bottom: 2px solid var(--color-border); color: var(--color-accent-gold); font-weight: 600; }
+  td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+  tr:hover td { background: rgba(255,255,255,0.03); }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .row-error td { color: var(--color-primary-hover); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 0.72rem; font-weight: 600; background: rgba(255,255,255,0.1); }
+  .badge-ok { background: var(--color-primary); color: #fff; }
+  .badge-warn { background: var(--color-accent-gold); color: var(--color-dark); }
+  .badge-asset { background: var(--color-accent-bronze); color: #fff; }
+  .addr-badge { display: inline-block; padding: 2px 8px; border-radius: 6px; border: 1px solid; font-size: 0.8rem; cursor: help; }
+  .addr-unknown { color: var(--color-text-muted); font-size: 0.8rem; }
+  .addr-notes { color: var(--color-text-muted); font-size: 0.75rem; }
+  .wallet-card { background: var(--color-bg-card); border: 1px solid var(--color-border); border-radius: 12px; padding: 16px; }
+  .wallet-header { font-size: 1rem; color: var(--color-accent-gold); font-weight: 600; margin-bottom: 10px; }
+  .wallet-body { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .wallet-addr { font-size: 0.85rem; }
+  .wallet-balances { text-align: right; font-size: 0.85rem; }
+  .wallet-balances div { margin-bottom: 4px; }
+  .wallet-extra { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--color-border); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .addr-card { background: var(--color-bg-card); border: 1px solid var(--color-border); border-radius: 10px; overflow: hidden; }
+  .addr-card-header { padding: 10px 14px; font-weight: 600; font-size: 0.9rem; border-left: 3px solid; display: flex; justify-content: space-between; align-items: center; }
+  .addr-card-addr { font-size: 0.75rem; color: var(--color-text-muted); }
+  .addr-card-body { padding: 10px 14px; }
+  .addr-card-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 0.8rem; border-bottom: 1px solid rgba(255,255,255,0.04); }
+  .addr-card-row:last-child { border-bottom: none; }
+  .addr-notes-full { margin-top: 8px; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 6px; font-size: 0.78rem; color: var(--color-text-muted); }
+  .status-paused { color: var(--color-primary-hover); font-weight: 700; }
+  .status-active { color: var(--color-primary); font-weight: 700; }
+  .formula { background: rgba(0,0,0,0.25); border: 1px solid var(--color-border); border-radius: 8px; padding: 14px; margin: 12px 0; font-size: 0.85rem; }
+  .formula code { color: var(--color-accent-gold); }
+  .raw-json { background: var(--color-accent-deep-black); border: 1px solid var(--color-border); border-radius: 8px; padding: 14px; overflow-x: auto; font-size: 0.75rem; max-height: 400px; overflow-y: auto; }
+  .raw-json code { color: var(--color-accent-peach); background: none; padding: 0; }
+  .footer { text-align: center; color: var(--color-text-muted); font-size: 0.75rem; margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--color-border); }
+  @media print {
+    body { background: #fff !important; color: #222 !important; }
+    .card, .kpi, .wallet-card, .addr-card { background: #f7d4ca !important; border-color: rgba(34,34,34,0.15) !important; }
+    .muted, .sub { color: #712d23 !important; }
+    h1 { color: #F05F40 !important; }
+    h2, h3 { color: #cc7501 !important; }
+    th { color: #cc7501 !important; }
+    code { color: #712d23 !important; background: rgba(34,34,34,0.05) !important; }
+  }
+  @media (max-width: 768px) {
+    .kpis { flex-direction: column; }
+    .wallet-body { flex-direction: column; align-items: flex-start; }
+    .wallet-balances { text-align: left; }
+  }
+</style>
+</head>
+<body>
+<h1>💧 Snapshot de Liquidez — CAS</h1>
+<p class="sub">Rede: <b>Polygon PoS Mainnet</b> · Chain ID: 137 · Bloco: 91044715 · Timestamp: 2026-07-28T20:54:52.060Z</p>
+
+<div class="kpis"><div class="kpi"><div class="kpi-val" style="color:var(--color-primary);">106.457,06</div><div class="kpi-unit">CAS</div><div class="kpi-label">Reserva CAS CASSwap</div></div><div class="kpi"><div class="kpi-val" style="color:var(--color-accent-gold);">1,8036</div><div class="kpi-unit">POL</div><div class="kpi-label">Reserva POL CASSwap</div></div><div class="kpi"><div class="kpi-val" style="color:var(--color-accent-bronze);">114.062,96</div><div class="kpi-unit">CAS</div><div class="kpi-label">Liquidez Total CAS</div></div><div class="kpi"><div class="kpi-val" style="color:var(--color-accent-coral);">79,6731</div><div class="kpi-unit">POL</div><div class="kpi-label">Liquidez Total POL</div></div><div class="kpi"><div class="kpi-val" style="color:var(--color-primary);">84.080770</div><div class="kpi-unit">CAS/POL</div><div class="kpi-label">Preço Médio</div></div><div class="kpi"><div class="kpi-val" style="color:var(--color-accent-gold);">17.000000</div><div class="kpi-unit">17:1</div><div class="kpi-label">Ratio CASSwap</div></div></div>
+
+<h2>🏦 CASSwap</h2>
+<div class="card">
+  <table>
+    <tr><th>Métrica</th><th>Valor</th></tr>
+    <tr><td>Pausado</td><td><span class="status-paused">SIM</span></td></tr>
+    <tr><td>Endereço</td><td><a href="https://polygonscan.com/address/0x9399878Ce33EA9D4859ab708a111fB3f274BACF4" target="_blank" style="text-decoration:none;"><span class="addr-unknown" title="Endereço não registrado no banco">0x9399…ACF4</span></a></td></tr>
+    <tr><td>CAS Token</td><td><a href="https://polygonscan.com/address/0x5151A34EaC7bA08cd6B540b32cD30316218A2287" target="_blank" style="text-decoration:none;"><span class="addr-badge" style="border-color:#F05F40;" title="0x5151A34EaC7bA08cd6B540b32cD30316218A2287">👤 Ednardo — <span class="addr-notes">Nossa Moeda</span></span></a></td></tr>
+    <tr><td>Ratio (1 POL = ? CAS)</td><td><b>17.000000</b> <span class="muted">(17:1)</span></td></tr>
+    <tr><td>Taxa de swap (bps)</td><td>0</td></tr>
+    <tr><td>Reserva CAS</td><td class="num"><b>106.457,0568</b> CAS</td></tr>
+    <tr><td>Reserva POL</td><td class="num"><b>1,803586</b> POL</td></tr>
+    <tr><td>CAS (wei)</td><td><code>106457056767999547808800</code></td></tr>
+    <tr><td>POL (wei)</td><td><code>1803586208979003191</code></td></tr>
+  </table>
+</div>
+
+<h2>👛 Carteiras / Fundo</h2>
+<div class="card-grid"><div class="wallet-card">
+      <div class="wallet-header">Deployer / Admin</div>
+      <div class="wallet-body">
+        <div class="wallet-addr"><a href="https://polygonscan.com/address/0x66682BBeD9e540017967692cCdd069fE5F833888" target="_blank" style="color:inherit;text-decoration:none;">Rapport Tecnologia<br><code>0x6668…3888</code></a></div>
+        <div class="wallet-balances">
+          <div><span class="muted">POL</span> <b>2.12436778207794905 POL</b></div>
+          <div><span class="muted">CAS</span> <b>50.013,3576</b></div>
+        </div>
+      </div>
+      <div class="wallet-extra">
+        <span class="badge">👤 wallet</span>
+        <span class="badge badge-asset">CAS</span>
+        <span class="muted">TX: 84</span>
+        <span class="muted">Desde: 2026-07-14</span>
+      </div>
+    </div><div class="wallet-card">
+      <div class="wallet-header">Infrastructure Fund</div>
+      <div class="wallet-body">
+        <div class="wallet-addr"><a href="https://polygonscan.com/address/0x190A9D2f206dbeb72Ce8b88Dc2603745fB5f50dB" target="_blank" style="color:inherit;text-decoration:none;">0x190A…50dB<br><code>0x190A…50dB</code></a></div>
+        <div class="wallet-balances">
+          <div><span class="muted">POL</span> <b>10.11764705882352941 POL</b></div>
+          <div><span class="muted">CAS</span> <b>100.101</b></div>
+        </div>
+      </div>
+      
+    </div></div>
+
+<h2>📊 DEXs — Reservas e Preços</h2>
+<div class="card">
+  <table>
+    <thead>
+      <tr>
+        <th>DEX</th><th>Par LP</th><th>WPOL?</th><th>Reserva CAS</th><th>Reserva POL/OTHER</th>
+        <th>Preço (CAS/POL)</th><th>LP Total</th><th>LP Deployer</th><th>Notas</th>
+      </tr>
+    </thead>
+    <tbody><tr class="">
+      <td><b>QuickSwap</b></td>
+      <td><a href="https://polygonscan.com/address/0xf77BD26fE17adb1bC99BE6Cd63414b2A7819690E" target="_blank" style="text-decoration:none;"><span class="addr-badge" style="border-color:#cc7501;" title="0xf77BD26fE17adb1bC99BE6Cd63414b2A7819690E">🏛️ QUICKSWAP_LP_TOKEN_ADDRESS — <span class="addr-notes">Conta de Liquidez da Quick Swap</span></span></a></td>
+      <td><span class="badge badge-ok">SIM</span></td>
+      <td class="num">55,6817</td>
+      <td class="num">0,8281 <span class="muted">POL</span></td>
+      <td class="num">67.244417</td>
+      <td class="num">0,0074</td>
+      <td class="num">0 <span class="muted">(0.00%)</span></td>
+      <td><span class="muted">—</span></td>
+    </tr><tr class="">
+      <td><b>SushiSwap</b></td>
+      <td><a href="https://polygonscan.com/address/0x265D86d4D43c32037b032097e8bFB6893E1C3964" target="_blank" style="text-decoration:none;"><span class="addr-badge" style="border-color:#cc7501;" title="0x265D86d4D43c32037b032097e8bFB6893E1C3964">🏛️ SushiSwap LP Token</span></a></td>
+      <td><span class="badge badge-ok">SIM</span></td>
+      <td class="num">7.258,8191</td>
+      <td class="num">73,6039 <span class="muted">POL</span></td>
+      <td class="num">98.619976</td>
+      <td class="num">707,1068</td>
+      <td class="num">0 <span class="muted">(0.00%)</span></td>
+      <td><span class="muted">—</span></td>
+    </tr><tr class="">
+      <td><b>ApeSwap</b></td>
+      <td><a href="https://polygonscan.com/address/0xF27F3c3E305FEdf21B491A1d531fd4c3c80312B4" target="_blank" style="text-decoration:none;"><span class="addr-badge" style="border-color:#cc7501;" title="0xF27F3c3E305FEdf21B491A1d531fd4c3c80312B4">🏛️ ApeSwap LP Token</span></a></td>
+      <td><span class="badge badge-ok">SIM</span></td>
+      <td class="num">141,7358</td>
+      <td class="num">1,5672 <span class="muted">POL</span></td>
+      <td class="num">90.439445</td>
+      <td class="num">7,0711</td>
+      <td class="num">0 <span class="muted">(0.00%)</span></td>
+      <td><span class="muted">—</span></td>
+    </tr><tr class="">
+      <td><b>Dfyn</b></td>
+      <td><a href="https://polygonscan.com/address/0x2275BFC0b1E26fB36a42E26fA1E5e4D823E62bc3" target="_blank" style="text-decoration:none;"><span class="addr-badge" style="border-color:#cc7501;" title="0x2275BFC0b1E26fB36a42E26fA1E5e4D823E62bc3">🏛️ DFyn LP Token</span></a></td>
+      <td><span class="badge badge-warn">NÃO</span></td>
+      <td class="num">149,6641</td>
+      <td class="num">1,8704 <span class="muted">OTHER</span></td>
+      <td class="num">80.019242</td>
+      <td class="num">7,0711</td>
+      <td class="num">0 <span class="muted">(0.00%)</span></td>
+      <td>Par nao e WPOL — a 'reserva POL' e o outro token.</td>
+    </tr></tbody>
+  </table>
+</div>
+
+<h2>📋 Detalhes dos Endereços (do banco de dados)</h2>
+<div class="card-grid"><div class="addr-card"><div class="addr-card-header">📦 0x9399…acf4</div><div class="addr-card-body"><span class="muted">Sem informações no banco de dados.</span></div></div><div class="addr-card">
+    <div class="addr-card-header" style="border-color:var(--color-primary);">
+      👤 Ednardo
+      <span class="addr-card-addr" title="0x5151a34eac7ba08cd6b540b32cd30316218a2287">0x5151…2287</span>
+    </div>
+    <div class="addr-card-body">
+      <div class="addr-card-row"><span class="muted">Tipo</span><span><span class="badge" style="background:var(--color-primary);">👤 unknown</span></span></div>
+      <div class="addr-card-row"><span class="muted">Asset</span><span><span class="badge badge-asset">HTTPS</span></span></div>
+      <div class="addr-card-row"><span class="muted">Transações</span><span>0</span></div>
+      <div class="addr-card-row"><span class="muted">Total Recebido</span><span>0 CAS</span></div>
+      <div class="addr-card-row"><span class="muted">Total Enviado</span><span>0 CAS</span></div>
+      
+      
+      <div class="addr-notes-full">Nossa Moeda</div>
+    </div>
+  </div><div class="addr-card">
+    <div class="addr-card-header" style="border-color:var(--color-primary);">
+      👤 Rapport Tecnologia
+      <span class="addr-card-addr" title="0x66682bbed9e540017967692ccdd069fe5f833888">0x6668…3888</span>
+    </div>
+    <div class="addr-card-body">
+      <div class="addr-card-row"><span class="muted">Tipo</span><span><span class="badge" style="background:var(--color-primary);">👤 wallet</span></span></div>
+      <div class="addr-card-row"><span class="muted">Asset</span><span><span class="badge badge-asset">CAS</span></span></div>
+      <div class="addr-card-row"><span class="muted">Transações</span><span>84</span></div>
+      <div class="addr-card-row"><span class="muted">Total Recebido</span><span>2.009.320,58 CAS</span></div>
+      <div class="addr-card-row"><span class="muted">Total Enviado</span><span>1.959.307,22 CAS</span></div>
+      <div class="addr-card-row"><span class="muted">Primeira aparição</span><span>2026-07-14T17:45:02.000Z</span></div>
+      <div class="addr-card-row"><span class="muted">Última aparição</span><span>2026-07-19T01:23:40.000Z</span></div>
+      <div class="addr-notes-full">Startup Idealizadora do Agentic Space</div>
+    </div>
+  </div><div class="addr-card"><div class="addr-card-header">📦 0x190a…50db</div><div class="addr-card-body"><span class="muted">Sem informações no banco de dados.</span></div></div><div class="addr-card">
+    <div class="addr-card-header" style="border-color:var(--color-accent-bronze);">
+      🏛️ QUICKSWAP_LP_TOKEN_ADDRESS
+      <span class="addr-card-addr" title="0xf77bd26fe17adb1bc99be6cd63414b2a7819690e">0xf77b…690e</span>
+    </div>
+    <div class="addr-card-body">
+      <div class="addr-card-row"><span class="muted">Tipo</span><span><span class="badge" style="background:var(--color-accent-bronze);">🏛️ lp</span></span></div>
+      
+      <div class="addr-card-row"><span class="muted">Transações</span><span>51</span></div>
+      <div class="addr-card-row"><span class="muted">Total Recebido</span><span>517.792,09 CAS</span></div>
+      <div class="addr-card-row"><span class="muted">Total Enviado</span><span>519.736,41 CAS</span></div>
+      <div class="addr-card-row"><span class="muted">Primeira aparição</span><span>2026-07-14T20:44:35.000Z</span></div>
+      <div class="addr-card-row"><span class="muted">Última aparição</span><span>2026-07-24T19:54:00.000Z</span></div>
+      <div class="addr-notes-full">Conta de Liquidez da Quick Swap</div>
+    </div>
+  </div><div class="addr-card"><div class="addr-card-header">📦 0x0d50…1270</div><div class="addr-card-body"><span class="muted">Sem informações no banco de dados.</span></div></div><div class="addr-card">
+    <div class="addr-card-header" style="border-color:var(--color-accent-bronze);">
+      🏛️ SushiSwap LP Token
+      <span class="addr-card-addr" title="0x265d86d4d43c32037b032097e8bfb6893e1c3964">0x265d…3964</span>
+    </div>
+    <div class="addr-card-body">
+      <div class="addr-card-row"><span class="muted">Tipo</span><span><span class="badge" style="background:var(--color-accent-bronze);">🏛️ lp</span></span></div>
+      
+      <div class="addr-card-row"><span class="muted">Transações</span><span>352</span></div>
+      <div class="addr-card-row"><span class="muted">Total Recebido</span><span>158.078,09 CAS</span></div>
+      <div class="addr-card-row"><span class="muted">Total Enviado</span><span>150.819,28 CAS</span></div>
+      <div class="addr-card-row"><span class="muted">Primeira aparição</span><span>2026-07-14T21:28:11.000Z</span></div>
+      <div class="addr-card-row"><span class="muted">Última aparição</span><span>2026-07-26T12:56:30.000Z</span></div>
+      
+    </div>
+  </div><div class="addr-card">
+    <div class="addr-card-header" style="border-color:var(--color-accent-bronze);">
+      🏛️ ApeSwap LP Token
+      <span class="addr-card-addr" title="0xf27f3c3e305fedf21b491a1d531fd4c3c80312b4">0xf27f…12b4</span>
+    </div>
+    <div class="addr-card-body">
+      <div class="addr-card-row"><span class="muted">Tipo</span><span><span class="badge" style="background:var(--color-accent-bronze);">🏛️ lp</span></span></div>
+      
+      <div class="addr-card-row"><span class="muted">Transações</span><span>67</span></div>
+      <div class="addr-card-row"><span class="muted">Total Recebido</span><span>3.136,04 CAS</span></div>
+      <div class="addr-card-row"><span class="muted">Total Enviado</span><span>2.994,31 CAS</span></div>
+      <div class="addr-card-row"><span class="muted">Primeira aparição</span><span>2026-07-14T22:44:14.000Z</span></div>
+      <div class="addr-card-row"><span class="muted">Última aparição</span><span>2026-07-25T20:03:31.000Z</span></div>
+      
+    </div>
+  </div><div class="addr-card">
+    <div class="addr-card-header" style="border-color:var(--color-accent-bronze);">
+      🏛️ DFyn LP Token
+      <span class="addr-card-addr" title="0x2275bfc0b1e26fb36a42e26fa1e5e4d823e62bc3">0x2275…2bc3</span>
+    </div>
+    <div class="addr-card-body">
+      <div class="addr-card-row"><span class="muted">Tipo</span><span><span class="badge" style="background:var(--color-accent-bronze);">🏛️ lp</span></span></div>
+      
+      <div class="addr-card-row"><span class="muted">Transações</span><span>39</span></div>
+      <div class="addr-card-row"><span class="muted">Total Recebido</span><span>2.482,62 CAS</span></div>
+      <div class="addr-card-row"><span class="muted">Total Enviado</span><span>2.332,96 CAS</span></div>
+      <div class="addr-card-row"><span class="muted">Primeira aparição</span><span>2026-07-14T22:44:20.000Z</span></div>
+      <div class="addr-card-row"><span class="muted">Última aparição</span><span>2026-07-25T20:03:31.000Z</span></div>
+      
+    </div>
+  </div><div class="addr-card"><div class="addr-card-header">📦 0x4c28…e1fa</div><div class="addr-card-body"><span class="muted">Sem informações no banco de dados.</span></div></div></div>
+
+<h2>🔄 Dados para Restauração (mesmo estágio)</h2>
+<div class="card">
+  <p class="sub">Para retornar ao <b>mesmo estágio</b> de liquidez, o script de restore deve depositar exatamente as quantidades abaixo:</p>
+  <table>
+    <thead>
+      <tr><th>DEX</th><th>CAS (wei)</th><th>POL/OTHER (wei)</th><th>CAS formatado</th><th>POL/OTHER formatado</th></tr>
+    </thead>
+    <tbody><tr>
+      <td><b>QuickSwap</b></td>
+      <td class="num"><code>55681749074542989085</code></td>
+      <td class="num"><code>828050148181067493</code></td>
+      <td class="num">55,6817</td>
+      <td class="num">0,8281 POL</td>
+    </tr><tr>
+      <td><b>SushiSwap</b></td>
+      <td class="num"><code>7258819052276038436665</code></td>
+      <td class="num"><code>73603942872453561034</code></td>
+      <td class="num">7.258,8191</td>
+      <td class="num">73,6039 POL</td>
+    </tr><tr>
+      <td><b>ApeSwap</b></td>
+      <td class="num"><code>141735818329984518538</code></td>
+      <td class="num"><code>1567190266846388254</code></td>
+      <td class="num">141,7358</td>
+      <td class="num">1,5672 POL</td>
+    </tr><tr>
+      <td><b>Dfyn</b></td>
+      <td class="num"><code>149664099942891093026</code></td>
+      <td class="num"><code>1870351387760257168</code></td>
+      <td class="num">149,6641</td>
+      <td class="num">1,8704 OTHER</td>
+    </tr></tbody>
+  </table>
+  <h3>CASSwap</h3>
+  <table>
+    <tr><td>CAS (wei)</td><td><code>106457056767999547808800</code></td></tr>
+    <tr><td>POL (wei)</td><td><code>1803586208979003191</code></td></tr>
+    <tr><td>CAS formatado</td><td>106.457,0568 CAS</td></tr>
+    <tr><td>POL formatado</td><td>1,803586 POL</td></tr>
+    <tr><td>Ratio</td><td>17:1</td></tr>
+  </table>
+</div>
+
+<h2>🧮 Cálculo para Novo Estágio</h2>
+<div class="card">
+  <p>Quando for necessário ajustar para um <b>novo preço alvo</b> <code>P_target = CAS/POL</code>:</p>
+  <div class="formula">
+    1. Mantendo a constante do produto <code>k = CAS_atual × POL_atual</code><br>
+    2. Novas reservas ideais em um par V2:<br>
+    &nbsp;&nbsp;<code>CAS_novo = √(k × P_target)</code><br>
+    &nbsp;&nbsp;<code>POL_novo = √(k / P_target)</code><br>
+    3. Quantidade a adicionar/remover:<br>
+    &nbsp;&nbsp;<code>ΔCAS = CAS_novo − CAS_atual</code><br>
+    &nbsp;&nbsp;<code>ΔPOL = POL_novo − POL_atual</code>
+  </div>
+  <p class="muted">Positivo = adicionar liquidez; negativo = remover liquidez (via swap ou removeLiquidity).</p>
+</div>
+
+<h2>📦 Raw JSON</h2>
+<div class="raw-json"><code>{
+  &quot;timestamp&quot;: &quot;2026-07-28T20:54:52.060Z&quot;,
+  &quot;network&quot;: &quot;Polygon PoS Mainnet&quot;,
+  &quot;chainId&quot;: 137,
+  &quot;blockNumber&quot;: 91044715,
+  &quot;casswap&quot;: {
+    &quot;address&quot;: &quot;0x9399878Ce33EA9D4859ab708a111fB3f274BACF4&quot;,
+    &quot;casToken&quot;: &quot;0x5151A34EaC7bA08cd6B540b32cD30316218A2287&quot;,
+    &quot;ratioNum&quot;: &quot;17&quot;,
+    &quot;ratioDen&quot;: &quot;1&quot;,
+    &quot;ratio&quot;: 17,
+    &quot;casReserve&quot;: &quot;106457056767999547808800&quot;,
+    &quot;polReserve&quot;: &quot;1803586208979003191&quot;,
+    &quot;swapFeeBps&quot;: &quot;0&quot;,
+    &quot;paused&quot;: true
+  },
+  &quot;deployer&quot;: {
+    &quot;address&quot;: &quot;0x66682BBeD9e540017967692cCdd069fE5F833888&quot;,
+    &quot;pol&quot;: &quot;2124367782077949050&quot;,
+    &quot;cas&quot;: &quot;50013357558078404337870&quot;
+  },
+  &quot;infrastructureFund&quot;: {
+    &quot;address&quot;: &quot;0x190A9D2f206dbeb72Ce8b88Dc2603745fB5f50dB&quot;,
+    &quot;pol&quot;: &quot;10117647058823529410&quot;,
+    &quot;cas&quot;: &quot;100101000000000000000000&quot;
+  },
+  &quot;dexes&quot;: [
+    {
+      &quot;name&quot;: &quot;QuickSwap&quot;,
+      &quot;address&quot;: &quot;0xf77BD26fE17adb1bC99BE6Cd63414b2A7819690E&quot;,
+      &quot;token0&quot;: &quot;0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270&quot;,
+      &quot;token1&quot;: &quot;0x5151a34eac7ba08cd6b540b32cd30316218a2287&quot;,
+      &quot;isWPOL&quot;: true,
+      &quot;casReserve&quot;: &quot;55681749074542989085&quot;,
+      &quot;polReserve&quot;: &quot;828050148181067493&quot;,
+      &quot;price&quot;: 67.24441653305183,
+      &quot;totalSupply&quot;: &quot;7365248147542641&quot;,
+      &quot;deployerLP&quot;: &quot;0&quot;
+    },
+    {
+      &quot;name&quot;: &quot;SushiSwap&quot;,
+      &quot;address&quot;: &quot;0x265D86d4D43c32037b032097e8bFB6893E1C3964&quot;,
+      &quot;token0&quot;: &quot;0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270&quot;,
+      &quot;token1&quot;: &quot;0x5151a34eac7ba08cd6b540b32cd30316218a2287&quot;,
+      &quot;isWPOL&quot;: true,
+      &quot;casReserve&quot;: &quot;7258819052276038436665&quot;,
+      &quot;polReserve&quot;: &quot;73603942872453561034&quot;,
+      &quot;price&quot;: 98.61997562895056,
+      &quot;totalSupply&quot;: &quot;707106781186547524400&quot;,
+      &quot;deployerLP&quot;: &quot;0&quot;
+    },
+    {
+      &quot;name&quot;: &quot;ApeSwap&quot;,
+      &quot;address&quot;: &quot;0xF27F3c3E305FEdf21B491A1d531fd4c3c80312B4&quot;,
+      &quot;token0&quot;: &quot;0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270&quot;,
+      &quot;token1&quot;: &quot;0x5151a34eac7ba08cd6b540b32cd30316218a2287&quot;,
+      &quot;isWPOL&quot;: true,
+      &quot;casReserve&quot;: &quot;141735818329984518538&quot;,
+      &quot;polReserve&quot;: &quot;1567190266846388254&quot;,
+      &quot;price&quot;: 90.43944524693572,
+      &quot;totalSupply&quot;: &quot;7071067811865475244&quot;,
+      &quot;deployerLP&quot;: &quot;0&quot;
+    },
+    {
+      &quot;name&quot;: &quot;Dfyn&quot;,
+      &quot;address&quot;: &quot;0x2275BFC0b1E26fB36a42E26fA1E5e4D823E62bc3&quot;,
+      &quot;token0&quot;: &quot;0x4c28f48448720e9000907bc2611f73022fdce1fa&quot;,
+      &quot;token1&quot;: &quot;0x5151a34eac7ba08cd6b540b32cd30316218a2287&quot;,
+      &quot;isWPOL&quot;: false,
+      &quot;casReserve&quot;: &quot;149664099942891093026&quot;,
+      &quot;polReserve&quot;: &quot;1870351387760257168&quot;,
+      &quot;price&quot;: 80.01924179718637,
+      &quot;totalSupply&quot;: &quot;7071067811865475244&quot;,
+      &quot;deployerLP&quot;: &quot;0&quot;
+    }
+  ]
+}</code></div>
+
+<div class="footer">
+  Snapshot gerado em 2026-07-28T20:54:52.060Z · Polygon PoS Mainnet · Bloco 91044715<br>
+  Rapport Tecnologia — AgenticSpace
+</div>
+</body>
+</html>

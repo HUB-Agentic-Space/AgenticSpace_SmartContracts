@@ -1,4 +1,3 @@
-contracts
 .env.falcet
 .env.github
 
@@ -34,6 +33,8 @@ deploy/*/openzeppelin/
 .env
 .env.local
 .env.github
+.env.usdc
+.env.usdc.test
 
 # Audit reports
 slither-report.json
@@ -63,31 +64,18 @@ Thumbs.db
 # Metamask
 metamask/
 
-# Certificate sources are versioned even when the legacy contracts tree is ignored.
-!contracts/
-contracts/*
-!contracts/certificate/
-!contracts/certificate/ERC6551Registry.sol
-!contracts/certificate/RapportCertificate.sol
-!contracts/certificate/RapportCertificateAccount.sol
-!contracts/interfaces/
-contracts/interfaces/*
-!contracts/interfaces/IERC5192.sol
-!contracts/interfaces/IERC6551Account.sol
-!contracts/interfaces/IERC6551Executable.sol
-!contracts/interfaces/IERC6551Registry.sol
-!contracts/mocks/
-contracts/mocks/*
-!contracts/mocks/MockERC20.sol
-!contracts/mocks/MockFeeOnTransferERC20.sol
-!contracts/mocks/MockCertificateReceiver.sol
-!contracts/mocks/MockERC6551Registry.sol
-!contracts/mocks/MockToggleFeeERC20.sol
+# NOTA (2026-08-24): a antiga allowlist abaixo ignorava todo contracts/ e
+# scripts/deploy/ exceto uma lista curta de arquivos, o que deixou dezenas de
+# facets do Diamond (AgentRegistry, DAOs, ContractRegistry, tokens, etc.) e a
+# maioria dos scripts de deploy fora do controle de versao por meses. Motivo
+# historico desconhecido; corrigido para versionar toda a arvore de contratos
+# e scripts. Ver smartcontracts/docs/security-checklist.md.
 
-# Keep only this source deployment script visible under ignored deploy folders.
-!scripts/deploy/
-scripts/deploy/*
-!scripts/deploy/12_deploy_rapport_certificate.ts
-!scripts/deploy/13_register_certificate_fee.ts
-!scripts/deploy/14_register_rapport_certificate.ts
-!scripts/deploy/15_finalize_rapport_certificate_roles.ts
+# Python virtual environment and GNN checkpoints
+.venv/
+scripts/gnn/checkpoints/
+scripts/gnn/__pycache__/
+**/__pycache__/
+
+# Editor-local notes/plans
+.windsurf/

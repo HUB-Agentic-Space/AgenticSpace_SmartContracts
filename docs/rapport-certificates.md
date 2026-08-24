@@ -33,15 +33,23 @@ requisito como `FEE_TYPE_CERTIFICATE_ISSUANCE = 6`, com valor inicial de
 
 | Arquivo | Responsabilidade |
 |---|---|
-| `contracts/certificate/RapportCertificate.sol` | NFT, fases, autorização EIP-712, aporte CAS, revogação e hash do PDF |
+| `contracts/certificate/RapportCertificateUpgradeable.sol` | Proxy UUPS: NFT, fases, autorização EIP-712, aporte CAS, revogação e hash do PDF |
+| `contracts/certificate/RapportCertificateStorage.sol | Storage compartilhado: structs, erros, eventos e constantes do certificado |
+| `contracts/certificate/RapportCertificatePhaseAdminFacet.sol` | Facet administrativo: createPhase, setPhaseMultipleIssuance, updatePhaseMetadata, setPhasePrerequisites, activate/deactivatePhase (chamado via delegatecall) |
+| `contracts/certificate/RapportCertificate.sol` | Versão standalone (não-upgradeable) para testes e referência histórica |
 | `contracts/certificate/RapportCertificateAccount.sol` | TBA ERC-6551/ERC-1271 com execução limitada a `CALL` |
 | `contracts/certificate/ERC6551Registry.sol` | Registry de referência v0.3.1 para testes/redes explicitamente autorizadas sem o singleton |
 | `contracts/interfaces/IERC5192.sol` | Interface soulbound |
 | `contracts/interfaces/IERC6551*.sol` | Interfaces oficiais ERC-6551 |
 
-O certificado é standalone e deliberadamente não usa UUPS ou Diamond. Novas
-fases são dados administráveis, portanto não exigem upgrade da coleção. O
-endereço pode ser registrado no `ContractRegistryFacet` como
+O contrato em mainnet é um proxy UUPS (`RapportCertificateUpgradeable`). A
+arquitetura foi dividida em três arquivos para respeitar o limite EIP-170
+(24.576 bytes): o proxy principal mantém mint/revogação/bônus/pausa
+(22.449 bytes), enquanto as funções administrativas de fase vivem em um facet
+separado (8.432 bytes) acessado via `fallback()` + `delegatecall`. O ABI
+externo permanece idêntico — chamadores não percebem a divisão.
+
+O endereço pode ser registrado no `ContractRegistryFacet` como
 `RapportCertificate`.
 
 ## Autorização de emissão
@@ -104,16 +112,53 @@ espaços normalizados e UTF-8) e nunca diretamente de texto sem normalização.
 A fase `Sócio Fundador` é criada e ativada no construtor. O dashboard administra
 as próximas fases com:
 
-- `createPhase(name, templateHash, minCasDeposit, startsAt, endsAt)`
+- `createPhase(name, templateHash, minCasDeposit, startsAt, endsAt, skillsDescription, instructions, extraFeeTypeId, tbaRebateBps)`
 - `activatePhase(phaseId)`
-- `deactivateCurrentPhase()`
-- `getPhase(phaseId)`
+- `deactivatePhase(phaseId)`
+- `updatePhaseMetadata(phaseId, skillsDescription, instructions)`
+- `setPhasePrerequisites(phaseId, prerequisitePhaseIds[])`
+- `setPhaseExtraFeeType(phaseId, extraFeeTypeId, tbaRebateBps)`
+- `setPhaseMultipleIssuance(phaseId, allowMultipleIssuance, maxPerRecipient, maxTotalSupply)`
+- `setPhaseAdminFacet(facetAddress)` — configuração one-time após upgrade
+- `getPhase(phaseId)` — retorna 14 campos incluindo `allowMultipleIssuance`, `maxPerRecipient`, `maxTotalSupply`
 - `currentPhaseId()` e `phaseCount()`
 
-Configurações de fase são imutáveis depois de criadas. Para corrigir ou mudar
-um tipo de certificado, crie uma nova fase. O `name` vira o tipo/título visível
-do novo diploma e `templateHash` identifica a versão de sua arte. Ativar uma
-fase desativa a anterior, mas certificados antigos continuam válidos.
+Configurações de fase são imutáveis depois de criadas, exceto metadados
+descritivos (skills, instruções), taxas e configuração de emissão múltipla.
+Para corrigir ou mudar um tipo de certificado, crie uma nova fase. O `name`
+vira o tipo/título visível do novo diploma e `templateHash` identifica a
+versão de sua arte. Ativar uma fase desativa a anterior, mas certificados
+antigos continuam válidos.
+
+### Emissão múltipla (Maintainer Phase)
+
+Por padrão, cada usuário pode emitir apenas **um** certificado por fase
+(comportamento `single-issuance`). Para fases de manutenção contínua
+("Maintainer Phase"), o administrador pode ativar a emissão múltipla via
+`setPhaseMultipleIssuance`:
+
+```solidity
+setPhaseMultipleIssuance(phaseId, true, maxPerRecipient, maxTotalSupply)
+```
+
+- `maxPerRecipient`: máximo de certificados que um mesmo usuário pode emitir
+  nesta fase (≥ 1).
+- `maxTotalSupply`: limite global de certificados da fase (≥ maxPerRecipient).
+
+O contrato reverte com:
+- `MaxIssuancePerRecipientReached` — quando o usuário atinge maxPerRecipient.
+- `MaxTotalSupplyReached` — quando a fase atinge maxTotalSupply.
+
+Para desativar a emissão múltipla e voltar ao modo single-issuance:
+
+```solidity
+setPhaseMultipleIssuance(phaseId, false, 0, 0)
+```
+
+O backend (`GET /api/v1/certificates/eligibility?phaseId=X`) retorna o campo
+`multiIssuance` com `{ issuanceCount, maxPerRecipient, maxTotalSupply,
+phaseMinted }` para fases multi-issuance, permitindo que o frontend exiba
+o progresso do usuário.
 
 ## Bônus de CAS
 

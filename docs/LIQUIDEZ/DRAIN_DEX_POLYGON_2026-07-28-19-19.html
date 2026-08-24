@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Drenagem de Liquidez — 2026-07-28T22:19:24.902Z</title>
+<style>
+  :root {
+    --color-primary: #F05F40;
+    --color-primary-hover: #eb3812;
+    --color-dark: #222222;
+    --color-light: #ffffff;
+    --color-accent-gold: #fcc650;
+    --color-accent-bronze: #cc7501;
+    --color-accent-wine: #712d23;
+    --color-accent-coral: #ce6e6d;
+    --color-accent-peach: #f7d4ca;
+    --color-accent-deep-black: #070404;
+    --color-bg-main: var(--color-dark);
+    --color-bg-card: var(--color-accent-wine);
+    --color-text-main: var(--color-light);
+    --color-text-muted: var(--color-accent-peach);
+    --color-border: rgba(255, 255, 255, 0.15);
+    --color-link: var(--color-accent-gold);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--color-bg-main);
+    color: var(--color-text-main);
+    min-height: 100vh;
+    padding: 24px;
+    line-height: 1.5;
+  }
+  h1 { font-size: 1.6rem; color: var(--color-primary); margin-bottom: 4px; }
+  h2 { font-size: 1.2rem; color: var(--color-accent-gold); margin: 24px 0 12px; }
+  h3 { font-size: 1rem; color: var(--color-link); margin: 16px 0 8px; }
+  .sub { color: var(--color-text-muted); font-size: 0.85rem; margin-bottom: 16px; }
+  .muted { color: var(--color-text-muted); font-size: 0.8rem; }
+  code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.85rem; color: var(--color-accent-peach); background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 4px; }
+  .kpis { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
+  .kpi { background: var(--color-bg-card); border: 1px solid var(--color-border); border-radius: 10px; padding: 14px 18px; min-width: 140px; flex: 1; }
+  .kpi-val { font-size: 1.4rem; font-weight: 700; }
+  .kpi-label { font-size: 0.75rem; color: var(--color-text-muted); margin-top: 4px; }
+  .card { background: var(--color-bg-card); border: 1px solid var(--color-border); border-radius: 12px; padding: 18px; margin-bottom: 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th { text-align: left; padding: 8px 10px; border-bottom: 2px solid var(--color-border); color: var(--color-accent-gold); font-weight: 600; }
+  td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+  tr:hover td { background: rgba(255,255,255,0.03); }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 0.72rem; font-weight: 600; }
+  .badge-ok { background: var(--color-primary); color: #fff; }
+  .badge-warn { background: var(--color-accent-gold); color: var(--color-dark); }
+  .badge-err { background: var(--color-primary-hover); color: #fff; }
+  .footer { text-align: center; color: var(--color-text-muted); font-size: 0.75rem; margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--color-border); }
+  @media print {
+    body { background: #fff !important; color: #222 !important; }
+    .card, .kpi { background: #f7d4ca !important; border-color: rgba(34,34,34,0.15) !important; }
+    .muted, .sub { color: #712d23 !important; }
+    h1 { color: #F05F40 !important; }
+    h2, h3 { color: #cc7501 !important; }
+    th { color: #cc7501 !important; }
+    code { color: #712d23 !important; }
+  }
+  @media (max-width: 768px) { .kpis { flex-direction: column; } }
+</style>
+</head>
+<body>
+<h1>💧 Drenagem de Liquidez — CAS</h1>
+<p class="sub">Rede: <b>Polygon PoS Mainnet</b> · Chain ID: 137 · Bloco: 91048105 · Timestamp: 2026-07-28T22:19:24.902Z</p>
+
+<div class="kpis"><div class="kpi"><div class="kpi-val" style="color:var(--color-primary);">0</div><div class="kpi-label">V2 Drenados</div></div><div class="kpi"><div class="kpi-val" style="color:var(--color-accent-gold);">4</div><div class="kpi-label">V2 Pendentes</div></div><div class="kpi"><div class="kpi-val" style="color:var(--color-primary);">0</div><div class="kpi-label">V3 Drenadas</div></div><div class="kpi"><div class="kpi-val" style="color:var(--color-accent-gold);">0</div><div class="kpi-label">V3 Pendentes</div></div><div class="kpi"><div class="kpi-val" style="color:var(--color-accent-bronze);">0</div><div class="kpi-label">Pools V3</div></div><div class="kpi"><div class="kpi-val" style="color:var(--color-accent-coral);">0.0</div><div class="kpi-label">CAS Removido V2</div></div></div>
+
+<h2>📋 Metadata</h2>
+<div class="card">
+  <table>
+    <tr><th>Campo</th><th>Valor</th></tr>
+    <tr><td>CAS Token</td><td><a href="https://polygonscan.com/address/0x5151A34EaC7bA08cd6B540b32cD30316218A2287" target="_blank" style="color:#fcc650;text-decoration:none;"><code>0x5151A34EaC7bA08cd6B540b32cD30316218A2287</code></a></td></tr>
+    <tr><td>LP Lock</td><td><a href="https://polygonscan.com/address/0x42060386024b69F0365ae22a41501AdA2D53AA31" target="_blank" style="color:#fcc650;text-decoration:none;"><code>0x42060386024b69F0365ae22a41501AdA2D53AA31</code></a></td></tr>
+    <tr><td>Deployer</td><td><a href="https://polygonscan.com/address/0x66682BBeD9e540017967692cCdd069fE5F833888" target="_blank" style="color:#fcc650;text-decoration:none;"><code>0x66682BBeD9e540017967692cCdd069fE5F833888</code></a></td></tr>
+    <tr><td>V3 Factory</td><td><a href="https://polygonscan.com/address/0x1F98431c8aD98503651564eAcA7244605C59aB88" target="_blank" style="color:#fcc650;text-decoration:none;"><code>0x1F98431c8aD98503651564eAcA7244605C59aB88</code></a></td></tr>
+    <tr><td>V3 Position Manager</td><td><a href="https://polygonscan.com/address/0xC36442b4a4522E871399CD717aBDD847Ab11FE88" target="_blank" style="color:#fcc650;text-decoration:none;"><code>0xC36442b4a4522E871399CD717aBDD847Ab11FE88</code></a></td></tr>
+    <tr><td>Resgatado do lock</td><td>nenhum</td></tr>
+  </table>
+</div>
+
+<h2>📊 DEXs V2 — Drenagem</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>DEX</th><th>Par LP</th><th>CAS reserva</th><th>Outra reserva</th><th>Status</th></tr></thead>
+    <tbody><tr><td><b>QuickSwap</b></td><td><a href="https://polygonscan.com/address/0xf77BD26fE17adb1bC99BE6Cd63414b2A7819690E" target="_blank" style="color:#fcc650;text-decoration:none;"><code>0xf77BD26fE17adb1bC99BE6Cd63414b2A7819690E</code></a></td><td class="num">55.681749074542989085</td><td class="num">0.828050148181067493 WPOL</td><td><span class="badge badge-warn">NENHUM LP</span></td></tr>
+<tr><td><b>SushiSwap</b></td><td><a href="https://polygonscan.com/address/0x265D86d4D43c32037b032097e8bFB6893E1C3964" target="_blank" style="color:#fcc650;text-decoration:none;"><code>0x265D86d4D43c32037b032097e8bFB6893E1C3964</code></a></td><td class="num">7258.819052276038436665</td><td class="num">73.603942872453561034 WPOL</td><td><span class="badge badge-warn">NENHUM LP</span></td></tr>
+<tr><td><b>ApeSwap</b></td><td><a href="https://polygonscan.com/address/0xF27F3c3E305FEdf21B491A1d531fd4c3c80312B4" target="_blank" style="color:#fcc650;text-decoration:none;"><code>0xF27F3c3E305FEdf21B491A1d531fd4c3c80312B4</code></a></td><td class="num">141.735818329984518538</td><td class="num">1.567190266846388254 WPOL</td><td><span class="badge badge-warn">NENHUM LP</span></td></tr>
+<tr><td><b>Dfyn</b></td><td><a href="https://polygonscan.com/address/0x2275BFC0b1E26fB36a42E26fA1E5e4D823E62bc3" target="_blank" style="color:#fcc650;text-decoration:none;"><code>0x2275BFC0b1E26fB36a42E26fA1E5e4D823E62bc3</code></a></td><td class="num">149.664099942891093026</td><td class="num">1.870351387760257168 WETH</td><td><span class="badge badge-warn">NENHUM LP</span></td></tr></tbody>
+  </table>
+</div>
+
+<h2>🏊 Uniswap V3 — Drenagem</h2>
+<div class="card">
+  <h3>Posições do Deployer</h3>
+  <table>
+    <thead><tr><th>Posição</th><th>Pool</th><th>Fee</th><th>Outro token</th><th>Liquidez</th><th>Status</th></tr></thead>
+    <tbody><tr><td colspan="6" class="muted">Nenhuma posição V3 encontrada</td></tr></tbody>
+  </table>
+</div>
+
+<h2>🔍 Pools V3 Encontradas</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>Pool</th><th>Fee</th><th>Outro token</th><th>Liquidez</th></tr></thead>
+    <tbody><tr><td colspan="4" class="muted">Nenhuma pool V3 encontrada</td></tr></tbody>
+  </table>
+</div>
+
+<div class="footer">
+  Drenagem executada em 2026-07-28T22:19:24.902Z · Polygon PoS Mainnet · Bloco 91048105<br>
+  Rapport Tecnologia — AgenticSpace
+</div>
+</body>
+</html>

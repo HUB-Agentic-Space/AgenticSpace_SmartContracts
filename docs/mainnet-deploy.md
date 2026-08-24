@@ -137,8 +137,41 @@ Verificar todos os contratos deployados:
 - InfrastructureFund (UUPS)
 - CASSwap (UUPS)
 - LiquidityLock (standalone)
+- RapportCertificateUpgradeable (UUPS proxy + implementation)
 
-### Passo 8: Validação
+### Passo 7b: RapportCertificate Upgradeable (UUPS)
+
+O `RapportCertificate` original nao e upgradeable. Uma nova versao UUPS
+(`RapportCertificateUpgradeable`) foi criada para suportar fee split
+(`extraFeeTypeId` + `tbaRebateBps`) sem redeploy completo.
+
+**Deploy do proxy + implementacao:**
+
+```bash
+npx hardhat run scripts/deploy/10_deploy_certificate_upgradeable.ts --network polygon
+```
+
+Salve no `.env`:
+- `RAPPORT_CERTIFICATE_ADDRESS` — endereco do proxy (atualizar para o novo)
+- `RAPPORT_CERTIFICATE_IMPL_ADDRESS` — endereco da implementacao
+
+**Migracao de estado (old -> proxy):**
+
+```bash
+npx hardhat run scripts/deploy/11_migrate_certificate_state.ts --network polygon
+```
+
+O script de migracao:
+1. Recria phases do contrato antigo no novo proxy
+2. Lista certificates que precisam de re-mint via backend relayer
+3. Migra attestations (document hashes, Merkle roots)
+
+> [!warning] Migracao de Certificates
+> A re-emissao de certificates requer autorizacao EIP-712 do backend.
+> O script lista o que precisa ser migrado, mas o mint real deve ser
+> feito pelo backend relayer com deposito de CAS e assinatura valida.
+
+### Passo 8: Validacao
 
 Para validar na testnet Amoy antes da mainnet:
 

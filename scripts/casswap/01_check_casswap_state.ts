@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { ethers } from "hardhat";
-import { Contract } from "ethers";
+import { Contract } from "agentic_space_commons";
 import {
   SEP,
   SUB,

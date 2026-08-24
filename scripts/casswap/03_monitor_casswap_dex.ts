@@ -2,7 +2,7 @@ import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
-import { ethers } from "ethers";
+import { ethers } from "agentic_space_commons";
 import React from "react";
 import { getNetworkInfo, requireEnv } from "../utils/deploy_helpers";
 

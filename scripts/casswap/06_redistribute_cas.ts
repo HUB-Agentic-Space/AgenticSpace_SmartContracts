@@ -19,7 +19,7 @@
  */
 
 import { ethers } from "hardhat";
-import { Contract, formatUnits } from "ethers";
+import { Contract, formatUnits } from "agentic_space_commons";
 import * as dotenv from "dotenv";
 import * as path from "path";
 import {

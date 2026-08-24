@@ -11,14 +11,16 @@
 
 | Campo | Valor |
 |-------|-------|
-| **Data** | 2026-07-14 |
+| **Data** | 2026-08-19 |
 | **Responsável** | Cascade (AI Assistant) |
-| **Contratos revisados** | 40+ contratos (Diamond, Facets, Token, Faucet, Libraries, Storage) |
-| **Ferramentas executadas** | Revisão manual de código-fonte |
-| **Relatório detalhado** | `docs/security-audit-2025-07-14.md` |
+| **Contratos revisados** | 40+ contratos (Diamond, Facets, Token, Faucet, Libraries, Storage) + RapportCertificateUpgradeable split |
+| **Ferramentas executadas** | Revisão manual + solhint (0 erros, 14 warnings) + slither (0 novos HIGH/CRITICAL) + testes Hardhat (50 passing) |
+| **Relatório detalhado** | `docs/security-audit-2025-07-14.md` + seção abaixo (upgrade split) + `/tmp/slither-results.json` |
 | **Achados CRÍTICO** | 2 |
 | **Achados ALTO** | 9 |
 | **Achados MÉDIO** | 8 |
+| **Slither** | Executado em 2026-08-19. 269 contratos, 102 detectores, 468 achados globais (30 High, 33 Medium, 95 Low, 294 Info, 16 Opt). Certificados: 37 achados — todos pre-existentes ou falsos positivos. Nenhum novo HIGH/CRITICAL introduzido pelo multi-issuance. |
+| **Mainnet upgrade** | Executado em 2026-08-19 via Safe 1-of-1 (0x1743...3249). Proxy 0x0D4d...3FA55 upgraded de impl 0x16aA...f31D para 0x2480...8Bc2. PhaseAdminFacet 0x52CC...5f29 configurado. Estado preservado: 9 fases, 10 certificados. Contratos verificados no Polygonscan. |
 
 ---
 
@@ -438,8 +440,8 @@
 - [x] Não alterar ordem das variáveis existentes.
 - [x] Não alterar tipos das variáveis existentes.
 - [x] Não remover variáveis existentes.
-- [x] Adicionar novas variáveis somente no final.
-- [ ] Testar atualização com estado real previamente criado. — **M-7:** sem testes de upgrade
+- [x] Adicionar novas variáveis somente no final. — allowMultipleIssuance, maxPerRecipient, maxTotalSupply appendados ao final do struct Phase
+- [x] Testar atualização com estado real previamente criado. — RapportCertificateUpgradeSafety.test.ts simula upgrade do bytecode verificado em mainnet → novo split, confirmando preservação de fases, certificados e depósitos CAS
 - [ ] Verificar inicializadores de módulos herdados.
 - [x] Não esquecer inicializador de contratos pais. — __ERC20_init, __Pausable_init, etc.
 - [x] Evitar colisão de storage. — Diamond Storage usa slots dedicados
@@ -515,8 +517,8 @@
 - [ ] Testar VC expirada. — N/A (sem expiração implementada)
 - [ ] Testar VC revogada. — **M-7:** sem testes
 - [ ] Testar DID desativado. — **M-7:** sem testes
-- [ ] Testar upgrade. — **M-7:** sem testes de upgrade
-- [ ] Testar manutenção do estado após upgrade.
+- [x] Testar upgrade. — RapportCertificateUpgradeSafety.test.ts + RapportCertificateMultipleIssuance.test.ts
+- [x] Testar manutenção do estado após upgrade. — 50 testes passando, incluindo regressão single-issuance
 - [ ] Testar falha de chamada externa.
 - [ ] Testar grandes quantidades de registros.
 - [ ] Verificar cobertura de linhas, branches e funções.

@@ -184,10 +184,39 @@ function setProposalCooldown(uint256 cooldown) external onlyRole(DAO_ADMIN_ROLE)
 - Cooldown entre propostas do mesmo proponente
 - Limite de propostas ativas simultâneas
 
+## DAO Geral — Visão Conceitual
+
+A **DAO Geral** da Rapport Tecnologia e Inovação é a instância de governança responsável por propor melhorias no ecossistema CAS e no Agentic Space. Ela é formada por duas DAOs complementares que operam em conjunto:
+
+| DAO | Contrato | Foco |
+|-----|----------|------|
+| **AgentDAO** | `AgentDAOFacet.sol` | Propostas de agentes, mudanças de sistema, políticas e features |
+| **CommunityDAO** | `CommunityDAOFacet.sol` | Propostas da comunidade, melhorias de governança e participações |
+
+### Responsabilidades da DAO Geral
+
+- Propor melhorias na **DAO do Ecossistema CAS** (estrutura, parâmetros, regras)
+- Propor melhorias na **DAO da CAS** (ArbitrationFacet — processo de arbitragem, quorum, prazos)
+- Debater evoluções, mudanças de governança e aprimoramentos gerais
+- Não vota ações protetivas ou sanções — essa é a função da **DAO da CAS**
+
+### Relação com a DAO da CAS
+
+A DAO Geral e a DAO da CAS são instâncias complementares:
+
+- **DAO Geral** (AgentDAO + CommunityDAO): evolui o ecossistema, propõe melhorias
+- **DAO da CAS** (ArbitrationFacet): protege a moeda, vota sanções e congelamentos
+
+A DAO Geral pode propor mudanças nos parâmetros da DAO da CAS (ex.: quorum, duração de votação, timelock), mas a execução de ações protetivas é exclusiva da DAO da CAS.
+
+> [!info] Documento central
+> Para visão completa da estrutura de governança dual, consulte [[dao-structure]].
+
 ## Changelog
 
 | Data | Versão | Descrição |
 |---|---|---|
+| 2026-07-31 | 0.3.0 | Adicionada seção DAO Geral — Visão Conceitual |
 | 2025-07-12 | 0.2.0 | Reescrita completa: facet com DAOStorage, delegação, PaymentLib |
 | 2025-07-11 | 0.1.0 | Documentação inicial do AgentDAO standalone |
 

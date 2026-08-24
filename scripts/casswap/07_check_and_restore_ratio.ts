@@ -3,7 +3,7 @@
  * Uso: npx hardhat run scripts/casswap/07_check_and_restore_ratio.ts --network polygon
  */
 import { ethers } from "hardhat";
-import { Contract } from "ethers";
+import { Contract } from "agentic_space_commons";
 import { requireEnv, SEP, SUB, sendAndVerify, fmtPOL } from "../utils/deploy_helpers";
 
 const CASSWAP_ABI = [
