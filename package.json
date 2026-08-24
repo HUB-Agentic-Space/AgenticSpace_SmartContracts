@@ -116,6 +116,8 @@
     "fraud:monitor:dry-run": "DRY_RUN=true hardhat run scripts/22_daily_fraud_monitor.ts --network hardhat",
     "diamond-cut:arbitration:amoy": "hardhat run scripts/23_diamond_cut_arbitration.ts --network polygonAmoy",
     "diamond-cut:arbitration:polygon": "hardhat run scripts/23_diamond_cut_arbitration.ts --network polygon",
+    "deploy:eip8004-8183-x402:amoy": "hardhat run scripts/deploy/24_deploy_eip8004_8183_x402.ts --network polygonAmoy",
+    "deploy:eip8004-8183-x402:polygon": "hardhat run scripts/deploy/24_deploy_eip8004_8183_x402.ts --network polygon",
     "airdrop:report": "tsx scripts/analysis/airdrop_campaign_report.ts",
     "deploy:buyback:polygon": "hardhat run scripts/deploy/09_deploy_buyback_burn.ts --network polygon",
     "buyback:execute:polygon": "hardhat run scripts/casswap/18_execute_buyback.ts --network polygon",
