@@ -345,6 +345,21 @@ npx hardhat run scripts/upgrade_token.ts --network polygonAmoy
 
 > Os endereços das demais facets são acessíveis via `DiamondLoupeFacet` no Diamond acima.
 
+## Endereços de Deploy na Mainnet (Produção)
+
+> Deploy realizado em 2026-08-27. Rede: Polygon PoS Mainnet (chainId 137).
+
+| Contrato | Endereço |
+|---|---|
+| Diamond | `0x80BD976cB588cD2F9aD9Ac671FB19174E9F3172b` |
+| IdentityRegistryFacet | `0xD8EA0b58A05AB6bEEb171d3184E60133c9a58787` |
+| ReputationRegistryFacet | `0x5c2d7cDC8D6EF54a960638e203301658b10Ca693` |
+| ValidationRegistryFacet | `0x6F0b3ad66399B7f7B08F67E16e565bb6fF5A6dc6` |
+| AgentCommerceFacet | `0xD1D989Ead76Dd2329d08404F8A437C56158F1737` |
+| X402FacilitatorFacet | `0x9c3cD0f228B3EeC470856B44c092789062F7a918` |
+
+> Total gasto no deploy das 5 facets: ~2,008 POL.
+
 ## Changelog
 
 | Data | Versão | Descrição |
