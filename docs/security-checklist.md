@@ -22,6 +22,28 @@
 | **Slither** | Executado em 2026-08-19. 269 contratos, 102 detectores, 468 achados globais (30 High, 33 Medium, 95 Low, 294 Info, 16 Opt). Certificados: 37 achados — todos pre-existentes ou falsos positivos. Nenhum novo HIGH/CRITICAL introduzido pelo multi-issuance. |
 | **Mainnet upgrade** | Executado em 2026-08-19 via Safe 1-of-1 (0x1743...3249). Proxy 0x0D4d...3FA55 upgraded de impl 0x16aA...f31D para 0x2480...8Bc2. PhaseAdminFacet 0x52CC...5f29 configurado. Estado preservado: 9 fases, 10 certificados. Contratos verificados no Polygonscan. |
 
+### Revisão adicional — EIP-8004 / EIP-8183 / x402 (2026-08-24)
+
+| Campo | Valor |
+|-------|-------|
+| **Data** | 2026-08-24 |
+| **Responsável** | Devin |
+| **Contratos revisados** | 8 novos contratos: `Eip8004Storage`, `CommerceStorage`, `X402Storage`, `SignatureLib`, `IdentityRegistryFacet`, `ReputationRegistryFacet`, `ValidationRegistryFacet`, `AgentCommerceFacet`, `X402FacilitatorFacet` (EIP-8004 Trust Layer + EIP-8183 agent commerce + x402 facilitator) |
+| **Ferramentas executadas** | **Apenas** revisão manual + suíte de testes Hardhat (`test/diamond/Eip8004Eip8183X402.test.ts`, 14 testes, todos passando). **Nenhuma auditoria completa (slither/mythril/echidna) foi realizada sobre este código novo.** |
+| **Relatório detalhado** | `docs/eip8004-trust-layer.md`, `docs/eip8183-agent-commerce.md`, `docs/x402-facilitator.md` (seções "Segurança" / "Escrow, CEI e Segurança" de cada documento) |
+| **Achados CRÍTICO** | 0 encontrados na revisão manual (não substitui análise estática/dinâmica — ver "Pendências" abaixo) |
+| **Achados ALTO** | 0 encontrados na revisão manual |
+| **Achados MÉDIO** | 0 encontrados na revisão manual |
+| **Slither / Mythril / Echidna** | **Pendente.** Nenhuma das três ferramentas foi executada contra as 8 facets/libraries novas listadas acima. Isso é um follow-up obrigatório antes de qualquer deploy em mainnet — ver nota em "Prioridades específicas do projeto" abaixo. |
+
+> [!warning] Escopo desta revisão
+> Esta entrada cobre **apenas** o código novo de EIP-8004/EIP-8183/x402.
+> Ela não substitui nem revalida a auditoria completa registrada em
+> 2026-08-19 acima, cujos achados CRÍTICO/ALTO/MÉDIO para os demais
+> contratos permanecem em aberto e não foram reavaliados aqui. Também
+> não constitui uma auditoria externa independente — apenas revisão
+> manual interna + testes automatizados.
+
 ---
 
 ## Legenda
@@ -96,26 +118,40 @@
 - [ ] Verificar se alguma função interna sensível foi exposta como `public` ou `external`. — **C-1:** init*() expostas
 - [ ] Verificar se callbacks podem contornar o controle de acesso.
 
+> [!note] EIP-8004/8183/x402 (2026-08-24)
+> As novas facets seguem o padrão `DiamondAccessControl.enforceRoleOrOwner`
+> já existente: `resolveDispute`/`setProtocolFeeBps`/`setDisputeWindow`/
+> `setNegotiationBounds` (`AgentCommerceFacet`) exigem `COMMERCE_ARBITER_ROLE`;
+> `setX402ProtocolFeeBps`/`settleWithAuthorization` (`X402FacilitatorFacet`)
+> exigem `X402_RELAYER_ROLE`; `submitValidation` (`ValidationRegistryFacet`)
+> exige `VALIDATOR_ROLE`. Ambas as novas roles herdam o mesmo bypass de
+> owner já apontado como **M-8**/**M-2** na auditoria de 2026-07-14 (o
+> owner sempre passa em `enforceRoleOrOwner`) — risco pré-existente, não
+> introduzido por este código, mas não corrigido por ele. `initAgentCommerce`
+> e `initX402` são owner-only (`enforceIsContractOwner`) e protegidos contra
+> reexecução por `AlreadyInitialized`, então **não** reproduzem o achado
+> **C-1** (init*() sem auth) da auditoria anterior.
+
 ---
 
 ## 4. Autenticação e assinaturas
 
-- [ ] **[CRÍTICO]** Não utilizar somente `msg.sender` quando a operação depende de uma assinatura externa.
-- [ ] Utilizar mensagens estruturadas com EIP-712.
-- [ ] Incluir domínio de assinatura (nome, versão, chainId, endereço do contrato).
-- [ ] Incluir um nonce único.
-- [ ] Incluir prazo de validade (deadline).
-- [ ] Marcar o nonce como consumido após a execução.
-- [ ] Impedir replay em outra blockchain.
-- [ ] Impedir replay em outro contrato.
-- [ ] Impedir replay após upgrade ou mudança de versão.
-- [ ] Verificar o endereço recuperado pela assinatura.
-- [ ] Rejeitar endereço zero.
-- [ ] Verificar assinaturas de carteiras inteligentes com ERC-1271.
-- [ ] Não assumir que todo usuário é uma EOA.
-- [ ] Utilizar bibliotecas consolidadas para ECDSA.
-- [ ] Verificar malleability da assinatura.
-- [ ] Garantir que o conteúdo assinado corresponda exatamente à operação executada.
+- [x] **[CRÍTICO]** Não utilizar somente `msg.sender` quando a operação depende de uma assinatura externa. — `X402FacilitatorFacet.settleWithAuthorization` exige `signature` + `ECDSA.recover`; `payDirect` usa apenas `msg.sender` legitimamente, pois não há terceiro relayando (ver `docs/x402-facilitator.md`)
+- [x] Utilizar mensagens estruturadas com EIP-712. — `X402Authorization(address payer,address payee,bytes32 requestHash,uint256 amount,uint256 deadline)` via `SignatureLib`
+- [x] Incluir domínio de assinatura (nome, versão, chainId, endereço do contrato). — `SignatureLib.domainSeparator(name, version)` inclui `block.chainid` e `address(this)`, calculado em tempo de chamada (nunca `immutable`) — ver nota dedicada abaixo
+- [ ] Incluir um nonce único. — **Nota:** x402 usa `requestHash` (hash da requisição HTTP off-chain) em vez de nonce sequencial, deliberadamente — ver `docs/x402-facilitator.md#requestHash como Chave Anti-Replay`; item não marcado por não ser um nonce incremental clássico
+- [x] Incluir prazo de validade (deadline). — `deadline` em `payDirect` e `settleWithAuthorization`, checado com `DeadlineExpired`
+- [x] Marcar o nonce como consumido após a execução. — `usedRequests[payer][requestHash] = true` marcado **antes** das transferências (CEI)
+- [ ] Impedir replay em outra blockchain. — coberto pelo domain separator (`block.chainid`), mas sem teste cross-chain dedicado
+- [ ] Impedir replay em outro contrato. — coberto pelo domain separator (`address(this)`), mas sem teste dedicado
+- [x] Impedir replay após upgrade ou mudança de versão. — domain separator recalculado a cada chamada via `address(this)`/`block.chainid` reais (nunca cacheado), evitando o pitfall clássico de Diamond + EIP-712 `immutable` — ver `docs/x402-facilitator.md`
+- [x] Verificar o endereço recuperado pela assinatura. — `signer != payer` reverte com `InvalidSignature`
+- [ ] Rejeitar endereço zero. — não há checagem explícita de `payer != address(0)` antes do `recover` (mitigado indiretamente: `ECDSA.recover` de assinatura válida nunca retorna endereço zero, mas não há teste dedicado)
+- [ ] Verificar assinaturas de carteiras inteligentes com ERC-1271. — não implementado; apenas EOAs via `ECDSA.recover`
+- [ ] Não assumir que todo usuário é uma EOA. — **pendência:** payers com smart-contract wallet (ERC-4337/Safe) não conseguem assinar via `ECDSA.recover` puro
+- [x] Utilizar bibliotecas consolidadas para ECDSA. — `@openzeppelin/contracts/utils/cryptography/ECDSA.sol`
+- [x] Verificar malleability da assinatura. — `ECDSA.recover` da OpenZeppelin rejeita assinaturas com `s` alto (malleable)
+- [x] Garantir que o conteúdo assinado corresponda exatamente à operação executada. — `structHash` inclui todos os parâmetros efetivamente usados em `_settle` (`payer, payee, requestHash, amount`) mais `deadline`
 
 ---
 
@@ -146,6 +182,14 @@
 ---
 
 ## 6. Privacidade e dados pessoais
+
+> [!note] Eip8004Storage (2026-08-24)
+> `IdentityRegistryFacet.metadataURI` armazena apenas uma **URI** (endereço
+> do agent card off-chain), nunca o conteúdo do card. `ReputationRegistryFacet`
+> armazena apenas `commentHash` (hash do comentário, nunca o texto).
+> `ValidationRegistryFacet` armazena apenas `workHash`/`reportHash`, nunca o
+> trabalho nem o relatório em si. Nenhum dado pessoal é gravado em texto
+> aberto pelas 3 facets do Trust Layer EIP-8004.
 
 - [ ] **[CRÍTICO]** Não armazenar dados pessoais completos diretamente na blockchain.
 - [ ] Não gravar nome, documento, endereço, telefone, e-mail ou informações médicas em texto aberto.
@@ -223,12 +267,12 @@
 
 ## 9. Reentrância
 
-- [x] **[CRÍTICO]** Identificar todas as chamadas externais. — mapeadas em todos os contratos
-- [x] Aplicar o padrão Checks–Effects–Interactions. — UserRegistryFacet documenta CEI
-- [ ] Utilizar `ReentrancyGuard` em operações sensíveis. — **A-3:** PaymentFacet sem guard, **A-4:** Faucet sem guard, **M-5:** UserRegistryFacet sem guard
-- [ ] Não proteger apenas a função principal; analisar reentrância entre funções diferentes.
-- [ ] Avaliar reentrância de somente leitura.
-- [x] Atualizar saldos antes da transferência. — CEI em UserRegistryFacet
+- [x] **[CRÍTICO]** Identificar todas as chamadas externais. — mapeadas em todos os contratos; em `AgentCommerceFacet`: `safeTransferFrom`/`safeTransfer` em `fundJob`, `_settle`, `resolveDispute`; em `X402FacilitatorFacet`: `safeTransferFrom` em `_settle`
+- [x] Aplicar o padrão Checks–Effects–Interactions. — UserRegistryFacet documenta CEI; **`AgentCommerceFacet`** finaliza `state`/`fundedAmount`/`updatedAt` do `Offer` **antes** de qualquer `safeTransfer`/`safeTransferFrom` em `fundJob`, `_settle` e `resolveDispute`; **`X402FacilitatorFacet._settle`** marca `usedRequests[payer][requestHash] = true` **antes** das duas `safeTransferFrom` (net ao payee, fee ao fundo) — ver `docs/eip8183-agent-commerce.md#Escrow, CEI e Segurança` e `docs/x402-facilitator.md#Segurança`
+- [ ] Utilizar `ReentrancyGuard` em operações sensíveis. — **A-3:** PaymentFacet sem guard, **A-4:** Faucet sem guard, **M-5:** UserRegistryFacet sem guard. `AgentCommerceFacet`/`X402FacilitatorFacet` também não usam `ReentrancyGuard` explícito, mitigado pelo CEI acima e pelo CAS ser um ERC-20 OZ padrão sem callbacks — ainda assim, não foi validado por fuzzing/echidna (ver pendência de ferramentas)
+- [ ] Não proteger apenas a função principal; analisar reentrância entre funções diferentes. — não testado formalmente para o novo código (ex.: reentrância cruzada entre `fundJob` e `cancelOffer`)
+- [ ] Avaliar reentrância de somente leitura. — não avaliado
+- [x] Atualizar saldos antes da transferência. — CEI em UserRegistryFacet e no novo código (ver acima)
 - [x] Evitar chamadas externas durante alterações parciais de estado.
 - [ ] Considerar que ERC-721 e ERC-1155 possuem callbacks.
 - [ ] Considerar tokens ERC-777 ou tokens não convencionais.
@@ -414,6 +458,19 @@
 
 ## 18. Eventos e auditoria
 
+> [!note] EIP-8004/8183/x402 (2026-08-24)
+> As 5 novas facets emitem evento em **toda** função de mutação de
+> estado: `AgentMetadataUpdated`, `FeedbackSubmitted`,
+> `ValidationRequested`/`ValidationSubmitted`,
+> `AgentCommerceInitialized`/`OfferCreated`/`OfferNegotiated`/
+> `OfferAccepted`/`OfferCancelled`/`JobFunded`/`JobDelivered`/
+> `JobSettled`/`DisputeRaised`/`DisputeResolved`,
+> `X402Initialized`/`PaymentSettled`. Todos os erros usam `error` customizado
+> (nunca `require(string)`), reduzindo custo de gas e mantendo mensagens
+> estruturadas — ver seções "Events"/"Errors" de cada documento em
+> `docs/eip8004-trust-layer.md`, `docs/eip8183-agent-commerce.md` e
+> `docs/x402-facilitator.md`.
+
 - [ ] Emitir eventos para alterações importantes de estado.
 - [ ] Emitir evento em: cadastro, alteração de DID, emissão de VC, suspensão, revogação, mint, burn, depósito, retirada, alteração de papéis, alteração de dependências, pausa, upgrade.
 - [ ] Não depender exclusivamente de eventos para estado crítico.
@@ -494,7 +551,19 @@
 
 ## 22. Testes automatizados
 
-- [x] Testar caminho feliz. — testes existem para token contracts
+> [!note] EIP-8004/8183/x402 (2026-08-24)
+> `test/diamond/Eip8004Eip8183X402.test.ts` cobre as 5 novas facets via
+> Diamond real (não chamadas diretas na implementação): 14 testes, todos
+> passando. Cobre caminho feliz completo de `AgentCommerceFacet`
+> (offer → negotiate → accept → fund → deliver → settle), clamp de
+> negociação fora dos limites, fluxo de disputa/resolução, feedback
+> backed por job liquidado e rejeição de feedback não backed, `payDirect`,
+> replay de `requestHash`, `settleWithAuthorization` válido, assinatura de
+> terceiro (rejeitada) e chamada de não-relayer (rejeitada). **Não há**
+> testes de fuzzing/invariantes/reentrância dedicados a este código —
+> apenas os casos deterministas acima.
+
+- [x] Testar caminho feliz. — testes existem para token contracts; `AgentCommerceFacet`/`X402FacilitatorFacet` cobertos em `Eip8004Eip8183X402.test.ts`
 - [ ] Testar todas as condições de erro. — **M-7:** cobertura insuficiente
 - [ ] Testar cada modificador de acesso. — **M-7:** sem testes para facets
 - [ ] Testar usuário não autorizado. — **M-7:** sem testes para facets
@@ -646,11 +715,27 @@ como hashes, emissores autorizados, identificadores não sensíveis e estado de
 revogação. A blockchain deve funcionar como camada de confiança e verificação,
 não como banco público de documentos pessoais.
 
+> [!warning] Pendência — EIP-8004 / EIP-8183 / x402 (2026-08-24)
+> As 8 contratos novos (`Eip8004Storage`, `CommerceStorage`, `X402Storage`,
+> `SignatureLib`, `IdentityRegistryFacet`, `ReputationRegistryFacet`,
+> `ValidationRegistryFacet`, `AgentCommerceFacet`, `X402FacilitatorFacet`)
+> **ainda não foram submetidos a Slither, Mythril ou Echidna**. Até o
+> momento, a única validação realizada foi revisão manual do código-fonte
+> mais a suíte de testes automatizados
+> (`test/diamond/Eip8004Eip8183X402.test.ts`, 14 testes passando). Isso
+> **não constitui** uma auditoria de segurança completa nem substitui
+> análise estática (Slither), análise simbólica (Mythril) ou
+> fuzzing/testes de invariantes (Echidna/Foundry). **Executar as três
+> ferramentas contra este código é um pré-requisito obrigatório antes de
+> qualquer deploy em mainnet**, seguindo a mesma prioridade 9 ("Fuzzing e
+> testes de invariantes") já listada acima.
+
 ---
 
 ## Histórico de revisões
 
 | Data | Responsável | Contratos revisados | Alterações |
 |------|------------|---------------------|------------|
+| 2026-08-24 | Devin | 8 contratos (EIP-8004 Trust Layer + EIP-8183 AgentCommerceFacet + x402 Facilitator) | Revisão manual + verificação da suíte de testes (`Eip8004Eip8183X402.test.ts`, 14 passing). Itens marcados em Controle de Acesso, Autenticação/Assinaturas (EIP-712), Reentrância/CEI e Privacidade. Slither/Mythril/Echidna **não executados** — pendência registrada para pré-mainnet. |
 | 2026-07-14 | _Inicial_ | — | Criação do arquivo espelho conforme regra `solidity-security.md` |
 | 2026-07-14 | Cascade (AI) | 40+ contratos | Revisão manual completa. 2 CRÍTICO, 9 ALTO, 8 MÉDIO. Ver `security-audit-2025-07-14.md` |

@@ -328,6 +328,23 @@ npx hardhat run scripts/upgrade_token.ts --network polygonAmoy
 - Conceda roles específicas (`PAUSER_ROLE`, `DAO_ADMIN_ROLE`, etc.) via `AccessControlFacet.grantRole()`
 - Mantenha os manifestos `.openzeppelin/` versionados para rastreabilidade de upgrades UUPS
 
+## Endereços de Deploy na Amoy (Último registro)
+
+> Deploy realizado em 2026-08-27. Rede: Polygon Amoy Testnet (chainId 80002).
+
+| Contrato | Endereço |
+|---|---|
+| Diamond | `0x7B927dc2561cA5Ca564D3E57d5E0170726662e4E` |
+| CASToken | `0x5151A34EaC7bA08cd6B540b32cD30316218A2287` |
+| InfrastructureFund | `0x190A9D2f206dbeb72Ce8b88Dc2603745fB5f50dB` |
+| IdentityRegistryFacet | `0xEa04d2F91329681247adBc7AF1a0B0676F41b55F` |
+| ReputationRegistryFacet | `0xf07FAf5f171857bc5e9A354e8A1F7071ad9f9793` |
+| ValidationRegistryFacet | `0x39683BBE9dc0116B6CFd52aebe1ACA80CCf270cb` |
+| AgentCommerceFacet | `0x3db2a1Ab8F198755C0Eaa4F756e4869c97ead6B2` |
+| X402FacilitatorFacet | `0x78Cfd1ce0b92728Ee7874CfECC424b9B8965273e` |
+
+> Os endereços das demais facets são acessíveis via `DiamondLoupeFacet` no Diamond acima.
+
 ## Changelog
 
 | Data | Versão | Descrição |

@@ -30,6 +30,9 @@ Cada domínio do Diamond possui seu próprio namespace de storage, acessado via 
 | `PaymentStorage` | `keccak256("agentic.space.diamond.payment.storage")` | Taxas e endereços |
 | `GasPromotionStorage` | `keccak256("agentic.space.diamond.gaspromotion.storage")` | Promoções de gas |
 | `ProjectStorage` | `keccak256("agentic.space.diamond.project.storage")` | Projetos |
+| `Eip8004Storage` | `keccak256("agentic.space.diamond.eip8004.storage")` | Trust Layer EIP-8004 (metadata, reputação, validação) |
+| `CommerceStorage` | `keccak256("agentic.space.diamond.commerce.storage")` | Comércio agente-a-agente EIP-8183 (ofertas, escrow) |
+| `X402Storage` | `keccak256("agentic.space.diamond.x402.storage")` | Facilitador x402 (anti-replay, taxa de protocolo) |
 
 ## RapportCertificateUpgradeable (UUPS proxy — standalone)
 
@@ -268,10 +271,113 @@ Cada DAO (RoadMap, Agent) tem seu próprio namespace:
 > [!note] Não implementado
 > `ProjectStorage` está definido mas nenhuma facet o utiliza atualmente. Reservado para uso futuro.
 
+## Eip8004Storage
+
+**Caminho:** `contracts/diamond/storage/Eip8004Storage.sol`
+
+Namespace do Trust Layer EIP-8004 (Trustless Agents): metadata do agente
+(Identity), agregação de feedback (Reputation) e solicitações de
+validação por terceiros (Validation). A identidade em si (`agentId`,
+owner, `publicId`, `isActive`) permanece em `AgentStorage` — este
+namespace só adiciona as extensões específicas do EIP-8004.
+
+### Struct `ValidationRequest`
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `validationId` | `uint256` | ID único da solicitação |
+| `agentId` | `bytes32` | Agente cujo trabalho está sendo validado |
+| `workHash` | `bytes32` | Hash do trabalho off-chain |
+| `requester` | `address` | Quem solicitou a validação (owner do agente) |
+| `validator` | `address` | Quem resolveu (endereço com `VALIDATOR_ROLE`) |
+| `resolved` | `bool` | Se já foi resolvida |
+| `approved` | `bool` | Resultado (aprovado/rejeitado) |
+| `reportHash` | `bytes32` | Hash do relatório de validação off-chain |
+| `requestedAt` | `uint256` | Timestamp da solicitação |
+| `resolvedAt` | `uint256` | Timestamp da resolução |
+
+### Mappings
+
+- `metadataURI[bytes32] → string` — agentId → URI do agent card/manifest (Identity)
+- `feedbackCount[bytes32] → uint256` — agentId (avaliado) → total de feedbacks recebidos
+- `feedbackScoreSum[bytes32] → uint256` — agentId (avaliado) → soma bruta das notas (0–100)
+- `feedbackGiven[bytes32][bytes32] → bool` — jobId (como `bytes32`) → agente avaliador → já avaliou
+- `validations[uint256] → ValidationRequest` — validationId → registro
+- `validationsByAgent[bytes32] → uint256[]` — agentId → lista de validationIds
+- `validationCount` — total de validações solicitadas
+
+## CommerceStorage
+
+**Caminho:** `contracts/diamond/storage/CommerceStorage.sol`
+
+Namespace do protocolo de comércio agente-a-agente EIP-8183: ofertas de
+serviço, negociação, funding em escrow, entrega, liquidação e disputas
+entre dois agentes registrados.
+
+### Enum `JobState`
+
+`None, Open, Negotiating, Accepted, Funded, Delivered, Settled, Disputed, Resolved, Cancelled`
+
+### Struct `Offer`
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `offerId` | `uint256` | ID único da oferta |
+| `sellerAgentId` | `bytes32` | Agente vendedor |
+| `sellerAddress` | `address` | Endereço do vendedor |
+| `buyerAgentId` | `bytes32` | Agente comprador (definido em `acceptOffer`) |
+| `buyerAddress` | `address` | Endereço do comprador (fixado na primeira `negotiate`) |
+| `scopeHash` | `bytes32` | Hash do escopo do serviço |
+| `price` | `uint256` | Preço atual (atualizado a cada negociação) |
+| `lastProposer` | `address` | Quem fez a última proposta de preço |
+| `deadline` | `uint256` | Prazo para negociar/aceitar |
+| `state` | `JobState` | Estado atual do ciclo de vida |
+| `fundedAmount` | `uint256` | Valor efetivamente depositado em escrow |
+| `deliveredAt` | `uint256` | Timestamp da entrega (`markDelivered`) |
+| `disputeReasonHash` | `bytes32` | Hash do motivo da disputa |
+| `createdAt` | `uint256` | Timestamp de criação |
+| `updatedAt` | `uint256` | Timestamp da última atualização |
+
+### Storage
+
+- `offers[uint256] → Offer` — offerId → Offer
+- `offersBySeller[bytes32] → uint256[]` — sellerAgentId → offerIds
+- `offerCount` — total de ofertas criadas
+- `protocolFeeBps` — taxa de protocolo cobrada do vendedor na liquidação
+- `disputeWindow` — segundos após a entrega em que o comprador pode disputar
+- `minNegotiationBps` / `maxNegotiationBps` — limites do clamp de negociação (padrão 5 000/15 000 = 50%–150%)
+- `initialized` — se `initAgentCommerce` já foi chamado
+
+> [!note] Detalhamento funcional
+> Ver [[eip8183-agent-commerce]] para o ciclo de vida completo, todas as
+> funções da `AgentCommerceFacet` e o racional do clamp de negociação.
+
+## X402Storage
+
+**Caminho:** `contracts/diamond/storage/X402Storage.sol`
+
+Namespace do facilitador x402 (HTTP 402 Payment Required): liquidações
+pay-per-call em CAS entre agentes, pagas diretamente pela carteira do
+chamador ou autorizadas off-chain via EIP-712 e submetidas por um
+relayer.
+
+### Storage
+
+- `usedRequests[address][bytes32] → bool` — payer → requestHash → já liquidado (chave anti-replay; `requestHash` identifica a requisição HTTP off-chain, não é um nonce sequencial)
+- `protocolFeeBps` — taxa de protocolo cobrada sobre cada liquidação, enviada ao `InfrastructureFund`
+- `initialized` — se `initX402` já foi chamado
+
+> [!note] Detalhamento funcional
+> Ver [[x402-facilitator]] para os dois caminhos de liquidação
+> (`payDirect` / `settleWithAuthorization`) e o motivo pelo qual o domain
+> separator EIP-712 (`SignatureLib`) nunca é cacheado como `immutable`
+> dentro de uma facet do Diamond.
+
 ## Changelog
 
 | Data | Versão | Descrição |
 |---|---|---|
+| 2026-08-24 | 0.3.0 | Adicionados `Eip8004Storage`, `CommerceStorage` e `X402Storage` (EIP-8004, EIP-8183, x402) |
 | 2025-07-12 | 0.2.0 | Documentação inicial dos 7 namespaces de Diamond Storage |
 
 ![footer](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=100&section=footer&animation=twinkling)

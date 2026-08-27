@@ -1,139 +1,162 @@
 import { ethers } from "hardhat";
+import { SEP, SUB, preFlightCheck, printSummary } from "../utils/deploy_helpers";
 
-/**
- * Incremental deploy script — continues from a partial deployment.
- *
- * Reuses already-deployed facets (by address) and only deploys missing ones,
- * then executes diamondCut to attach all facets to the existing Diamond.
- *
- * Set EXISTING_DIAMOND_ADDRESS in .env to skip Diamond proxy deployment.
- * Already-deployed facet addresses are hardcoded below from the previous run.
- */
-
-function getSelectors(contract: any): string[] {
-  const selectors: string[] = [];
-  const iface = contract.interface;
-  for (const fn of iface.fragments) {
-    if (fn.type === "function" && fn.name !== "init") {
-      selectors.push(iface.getFunction(fn.name).selector);
-    }
-  }
-  return selectors;
-}
-
-// Facets already deployed in previous run
-const ALREADY_DEPLOYED: Record<string, string> = {
-  DiamondLoupeFacet: "0x1Cf9d6cF0Fa979D09761D4f41bc78267f78977bE",
-  OwnershipFacet: "0x8AAd53FEF5CFD63598C7caF28B0F640245F778a7",
-  PausableFacet: "0x72Fd77B3cdb81066165787f494352399F0dB0027",
-  UserRegistryFacet: "0x7A2bDd7c0B80c78b4aE9677839976B5A28EBcbF1",
-  AgentRegistryFacet: "0xd8A3719afbaC8bb19291BF7fb33333a0eC903637",
-  AgentValidatorFacet: "0x7f76C4F89E70C31B12Ba14bfB943Ce206cf1809b",
-  RoadMapDAOFacet: "0xd14430836CF34B3B97b1D87B52FF47bff03b3F8a",
-  AgentDAOFacet: "0x9E54710842A1E752D618604567B3c53A4ca7baca",
-  ContractRegistryFacet: "0x455Bc25088f40c688B76974dF34626219931aD19",
-  AccessControlFacet: "0x0b4FEddA266AEf25Ba3Dbc3fdDB61399A799ba82",
-  PaymentFacet: "0xA1651eACb4031f1Fa25929d20d73B88b17Da92A6",
-  GasPromotionFacet: "0xB7eFab8c5180F9E9024E68D8CD0c3241b4915f23",
-};
-
-const EXISTING_DIAMOND = "0xa9e0Cc843d7C2D4f2Ead780CD2F806C080392415";
-const EXISTING_DIAMOND_INIT = "0x2056172c469a60E5290C27661CCF7D5785F8635B";
-
-// Facets still to deploy
-const REMAINING_FACETS: string[] = [];
+const EXISTING_DIAMOND = "0x7B927dc2561cA5Ca564D3E57d5E0170726662e4E";
 
 async function main() {
   const [deployer] = await ethers.getSigners();
-  console.log(`[deploy:incremental] Account: ${deployer.address}`);
-  console.log(`[deploy:incremental] Diamond: ${EXISTING_DIAMOND}`);
 
-  const allCuts: { facetAddress: string; action: number; functionSelectors: string[] }[] = [];
+  // -----------------------------------------------------------------------
+  // 0. Pre-flight check for remaining init and registration calls
+  // -----------------------------------------------------------------------
+  const { balance } = await preFlightCheck(
+    "Diamond Resume — Init & Register",
+    [
+      { label: "Init validator", gas: 100_000n },
+      { label: "Init RoadMapDAO", gas: 150_000n },
+      { label: "Init AgentDAO", gas: 150_000n },
+      { label: "Init CommunityDAO", gas: 150_000n },
+      { label: "Init Payment", gas: 100_000n },
+      { label: "Init GasPromotion", gas: 100_000n },
+      { label: "Register contracts", gas: 500_000n },
+    ],
+    { extraInfo: [{ label: "Diamond:", value: EXISTING_DIAMOND }] },
+  );
 
-  // Add already-deployed facets to the cut (they were not yet attached via diamondCut)
-  for (const [name, addr] of Object.entries(ALREADY_DEPLOYED)) {
-    const Factory = await ethers.getContractFactory(name);
-    // For facets already deployed, we just need the selectors from the factory
-    const fakeContract = Factory.attach(addr);
-    allCuts.push({
-      facetAddress: addr,
-      action: 0,
-      functionSelectors: getSelectors(fakeContract),
-    });
-    console.log(`[deploy:incremental] Reusing ${name}: ${addr}`);
-  }
-
-  // Deploy remaining facets
-  for (const name of REMAINING_FACETS) {
-    const Factory = await ethers.getContractFactory(name);
-    const facet = await Factory.deploy();
-    await facet.waitForDeployment();
-    const facetAddr = await facet.getAddress();
-    console.log(`[deploy:incremental] ${name}: ${facetAddr}`);
-
-    allCuts.push({
-      facetAddress: facetAddr,
-      action: 0,
-      functionSelectors: getSelectors(facet),
-    });
-  }
-
-  // Execute diamondCut with all facets (no init — already done during Diamond deployment)
-  const diamondCut = await ethers.getContractAt("IDiamondCut", EXISTING_DIAMOND);
-
-  console.log(`[deploy:incremental] Executing diamondCut with ${allCuts.length} facets...`);
-  const tx = await diamondCut.diamondCut(allCuts, ethers.ZeroAddress, "0x");
-  await tx.wait();
-  console.log(`[deploy:incremental] All facets attached to Diamond.`);
-
-  // Initialize domain facets
-  console.log(`[deploy:incremental] Initializing domain facets...`);
+  // -----------------------------------------------------------------------
+  // 1. Initialize domain facets (idempotent on Amoy — safe to retry)
+  // -----------------------------------------------------------------------
+  const call = async (label: string, fn: any) => {
+    try {
+      const tx = await fn();
+      await tx.wait();
+      console.log(`[resume] ${label} initialized.`);
+    } catch (error: any) {
+      const msg = error.message ?? "";
+      if (msg.includes("already initialized") || msg.includes("AlreadyInitialized")) {
+        console.log(`[resume] ${label} already initialized — skipping.`);
+      } else {
+        console.error(`[resume] ${label} failed: ${msg}`);
+        throw error;
+      }
+    }
+  };
 
   const validatorFacet = await ethers.getContractAt("AgentValidatorFacet", EXISTING_DIAMOND);
-  await (await validatorFacet.initValidator()).wait();
-  console.log(`[deploy:incremental] AgentValidatorFacet initialized.`);
+  await call("AgentValidatorFacet", () => validatorFacet.initValidator());
 
   const roadmapFacet = await ethers.getContractAt("RoadMapDAOFacet", EXISTING_DIAMOND);
-  await (await roadmapFacet.initRoadMapDAO()).wait();
-  console.log(`[deploy:incremental] RoadMapDAOFacet initialized.`);
+  await call("RoadMapDAOFacet", () => roadmapFacet.initRoadMapDAO());
 
   const agentDaoFacet = await ethers.getContractAt("AgentDAOFacet", EXISTING_DIAMOND);
-  await (await agentDaoFacet.initAgentDAO()).wait();
-  console.log(`[deploy:incremental] AgentDAOFacet initialized.`);
+  await call("AgentDAOFacet", () => agentDaoFacet.initAgentDAO());
+
+  const communityDaoFacet = await ethers.getContractAt("CommunityDAOFacet", EXISTING_DIAMOND);
+  await call("CommunityDAOFacet", () => communityDaoFacet.initCommunityDAO());
 
   const paymentFacet = await ethers.getContractAt("PaymentFacet", EXISTING_DIAMOND);
-  await (await paymentFacet.initPayment()).wait();
-  console.log(`[deploy:incremental] PaymentFacet initialized.`);
+  await call("PaymentFacet", () => paymentFacet.initPayment());
 
   const gasPromoFacet = await ethers.getContractAt("GasPromotionFacet", EXISTING_DIAMOND);
-  await (await gasPromoFacet.initGasPromotion()).wait();
-  console.log(`[deploy:incremental] GasPromotionFacet initialized.`);
+  await call("GasPromotionFacet", () => gasPromoFacet.initGasPromotion());
 
-  // Register external contracts
+  // -----------------------------------------------------------------------
+  // 2. Register external contracts
+  // -----------------------------------------------------------------------
   const contractRegistry = await ethers.getContractAt("ContractRegistryFacet", EXISTING_DIAMOND);
 
   const casTokenAddr = process.env.CAS_TOKEN_ADDRESS;
   if (casTokenAddr && casTokenAddr !== "") {
-    await (await contractRegistry.register("CASToken", 1, casTokenAddr)).wait();
-    console.log(`[deploy:incremental] CASToken registered: ${casTokenAddr}`);
-    await (await paymentFacet.setCasToken(casTokenAddr)).wait();
-    console.log(`[deploy:incremental] PaymentFacet bound to CASToken.`);
+    try {
+      const isReg = await contractRegistry.isRegistered("CASToken");
+      if (!isReg) {
+        await (await contractRegistry.register("CASToken", 1, casTokenAddr)).wait();
+        console.log(`[resume] CASToken registered at: ${casTokenAddr}`);
+      } else {
+        console.log(`[resume] CASToken already registered.`);
+      }
+      await (await paymentFacet.setCasToken(casTokenAddr)).wait();
+      console.log(`[resume] PaymentFacet bound to CASToken.`);
+    } catch (error: any) {
+      console.warn(`[resume] CASToken registration skipped: ${error.message}`);
+    }
+  } else {
+    console.log(`[resume] Skipping CASToken registration (CAS_TOKEN_ADDRESS not set).`);
   }
 
   const infraFundAddr = process.env.INFRASTRUCTURE_FUND_ADDRESS;
   if (infraFundAddr && infraFundAddr !== "") {
-    await (await contractRegistry.register("InfrastructureFund", 1, infraFundAddr)).wait();
-    console.log(`[deploy:incremental] InfrastructureFund registered: ${infraFundAddr}`);
-    await (await paymentFacet.setInfrastructureFund(infraFundAddr)).wait();
-    console.log(`[deploy:incremental] PaymentFacet bound to InfrastructureFund.`);
+    try {
+      const isReg = await contractRegistry.isRegistered("InfrastructureFund");
+      if (!isReg) {
+        await (await contractRegistry.register("InfrastructureFund", 1, infraFundAddr)).wait();
+        console.log(`[resume] InfrastructureFund registered at: ${infraFundAddr}`);
+      } else {
+        console.log(`[resume] InfrastructureFund already registered.`);
+      }
+      await (await paymentFacet.setInfrastructureFund(infraFundAddr)).wait();
+      console.log(`[resume] PaymentFacet bound to InfrastructureFund.`);
+    } catch (error: any) {
+      console.warn(`[resume] InfrastructureFund registration skipped: ${error.message}`);
+    }
+  } else {
+    console.log(`[resume] Skipping InfrastructureFund registration (INFRASTRUCTURE_FUND_ADDRESS not set).`);
   }
 
-  console.log(`\n[deploy:incremental] === Deployment Complete ===`);
-  console.log(`[deploy:incremental] Diamond address: ${EXISTING_DIAMOND}`);
-  console.log(`[deploy:incremental] Next: Set DIAMOND_ADDRESS=${EXISTING_DIAMOND} in .env files`);
+  const faucetAddress = process.env.FAUCET_ADDRESS;
+  if (faucetAddress && faucetAddress !== "") {
+    const alreadyRegistered = await contractRegistry.isRegistered("Faucet");
+    if (!alreadyRegistered) {
+      await (await contractRegistry.register("Faucet", 1, faucetAddress)).wait();
+      console.log(`[resume] Faucet registered at: ${faucetAddress}`);
+    } else {
+      console.log(`[resume] Faucet already registered, skipping.`);
+    }
+  } else {
+    console.log(`[resume] Skipping Faucet registration (FAUCET_ADDRESS not set).`);
+  }
+
+  const casSwapAddr = process.env.CAS_SWAP_ADDRESS;
+  if (casSwapAddr && casSwapAddr !== "") {
+    const alreadyRegistered = await contractRegistry.isRegistered("CASSwap");
+    if (!alreadyRegistered) {
+      await (await contractRegistry.register("CASSwap", 1, casSwapAddr)).wait();
+      console.log(`[resume] CASSwap registered at: ${casSwapAddr}`);
+    } else {
+      console.log(`[resume] CASSwap already registered, skipping.`);
+    }
+  } else {
+    console.log(`[resume] Skipping CASSwap registration (CAS_SWAP_ADDRESS not set).`);
+  }
+
+  const casMigrationAddr = process.env.CAS_MIGRATION_ADDRESS;
+  if (casMigrationAddr && casMigrationAddr !== "") {
+    const alreadyRegistered = await contractRegistry.isRegistered("CASMigration");
+    if (!alreadyRegistered) {
+      await (await contractRegistry.register("CASMigration", 1, casMigrationAddr)).wait();
+      console.log(`[resume] CASMigration registered at: ${casMigrationAddr}`);
+    } else {
+      console.log(`[resume] CASMigration already registered, skipping.`);
+    }
+  } else {
+    console.log(`[resume] Skipping CASMigration registration (CAS_MIGRATION_ADDRESS not set).`);
+  }
+
+  // -----------------------------------------------------------------------
+  // 3. Summary
+  // -----------------------------------------------------------------------
+  await printSummary(
+    "Diamond Resume Concluido",
+    [{ label: "Diamond:", value: EXISTING_DIAMOND }],
+    balance,
+    [
+      `Atualize .env: DIAMOND_ADDRESS=${EXISTING_DIAMOND}`,
+      `Verifique no Polygonscan: npx hardhat verify --network polygonAmoy ${EXISTING_DIAMOND} "${deployer.address}" "[...]"`,
+    ],
+  );
 }
 
 main().catch((error) => {
-  console.error(error);
+  console.error(`\n  Erro: ${error.message ?? error}`);
   process.exitCode = 1;
 });

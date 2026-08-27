@@ -36,7 +36,12 @@ Diamond (EIP-2535 Proxy — um endereço)
   ├── AgentDAOFacet            (DAO de agentes)
   ├── ContractRegistryFacet    (descoberta de endereços)
   ├── PaymentFacet             (configuração de taxas CAS)
-  └── GasPromotionFacet        (patrocínio de gas)
+  ├── GasPromotionFacet        (patrocínio de gas)
+  ├── IdentityRegistryFacet    (EIP-8004 — agent card / manifest URI)
+  ├── ReputationRegistryFacet  (EIP-8004 — feedback anti-Sybil)
+  ├── ValidationRegistryFacet  (EIP-8004 — validação por terceiros)
+  ├── AgentCommerceFacet       (EIP-8183 — comércio agente-a-agente com escrow)
+  └── X402FacilitatorFacet     (x402 — pagamentos pay-per-call, EIP-712)
 
 CASToken (UUPS standalone)           ← registrado no Diamond
 InfrastructureFund (UUPS standalone)  ← registrado no Diamond
@@ -92,12 +97,15 @@ contracts/
 │   │   └── LibDiamond.sol            # Storage, ownership, pause, diamondCut
 │   └── storage/
 │       ├── AgentStorage.sol
+│       ├── CommerceStorage.sol      # EIP-8183 — ofertas e escrow
 │       ├── DAOStorage.sol
+│       ├── Eip8004Storage.sol       # EIP-8004 — metadata, reputação, validação
 │       ├── GasPromotionStorage.sol
 │       ├── PaymentStorage.sol
 │       ├── ProjectStorage.sol
 │       ├── UserStorage.sol
-│       └── VCStorage.sol
+│       ├── VCStorage.sol
+│       └── X402Storage.sol          # x402 — anti-replay + taxa de protocolo
 ├── facets/
 │   ├── AccessControlFacet.sol
 │   ├── AgentDAOFacet.sol
@@ -108,7 +116,15 @@ contracts/
 │   ├── PausableFacet.sol
 │   ├── PaymentFacet.sol
 │   ├── RoadMapDAOFacet.sol
-│   └── UserRegistryFacet.sol
+│   ├── UserRegistryFacet.sol
+│   ├── eip8004/
+│   │   ├── IdentityRegistryFacet.sol
+│   │   ├── ReputationRegistryFacet.sol
+│   │   └── ValidationRegistryFacet.sol
+│   ├── eip8183/
+│   │   └── AgentCommerceFacet.sol
+│   └── x402/
+│       └── X402FacilitatorFacet.sol
 ├── faucet/
 │   ├── Faucet.sol
 │   └── IFaucet.sol
@@ -119,6 +135,7 @@ contracts/
 │   ├── AgentHashLib.sol
 │   ├── MerkleLib.sol
 │   ├── PaymentLib.sol
+│   ├── SignatureLib.sol             # EIP-712 domain separator (Diamond-safe)
 │   └── VotingLib.sol
 └── token/
     ├── CASToken.sol
@@ -154,6 +171,33 @@ contracts/
 
 > As taxas podem ser ajustadas pelo owner via `PaymentFacet.updateFees()`.
 
+## Fluxo de Comércio Agente-a-Agente (EIP-8183)
+
+1. `IdentityRegistryFacet.resolveAgent(agentId)` — agente comprador avalia a contraparte (identidade + metadata EIP-8004) antes de negociar
+2. `AgentCommerceFacet.createOffer(sellerAgentId, scopeHash, price, deadline)` — vendedor publica a oferta
+3. `AgentCommerceFacet.negotiate(offerId, counterPrice)` — comprador (ou vendedor) contrapropõe, sempre dentro dos limites `[minNegotiationBps, maxNegotiationBps]` do preço original — nenhum agente/LLM decide o range sozinho
+4. `AgentCommerceFacet.acceptOffer(offerId, buyerAgentId)` — a parte que não fez a última proposta aceita
+5. `AgentCommerceFacet.fundJob(offerId)` — comprador deposita CAS em escrow no próprio Diamond
+6. `AgentCommerceFacet.markDelivered(offerId)` — vendedor marca a entrega, abrindo a janela de disputa
+7. `AgentCommerceFacet.confirmDelivery(offerId)` (comprador) ou `claimSettlement(offerId)` (qualquer keeper, após a janela) — liquida o CAS: parte ao vendedor, taxa de protocolo ao `InfrastructureFund`
+8. Em caso de desacordo: `raiseDispute(offerId, reasonHash)` (comprador, dentro da janela) → `resolveDispute(offerId, buyerRefundBps)` (`COMMERCE_ARBITER_ROLE`)
+9. `ReputationRegistryFacet.submitFeedback(fromAgentId, toAgentId, offerId, score, commentHash)` — feedback só é aceito se `offerId` estiver `Settled`/`Resolved` entre os dois agentes (`isJobSettledBetween`), prevenindo Sybil/fake-review
+
+> [!note] Detalhamento completo
+> Ver [[eip8183-agent-commerce]] para o ciclo de vida completo (`JobState`), todas as funções, eventos e o racional do clamp de negociação, e [[eip8004-trust-layer]] para a camada de confiança e o design anti-Sybil da reputação.
+
+## Fluxo x402
+
+1. `PaymentFacet` já deve ter `casToken` e `infrastructureFund` configurados (mesma dependência do `AgentCommerceFacet`)
+2. `X402FacilitatorFacet.initX402(protocolFeeBps)` — owner inicializa e recebe `X402_RELAYER_ROLE`
+3. **Caminho direto:** o próprio pagador chama `payDirect(payee, requestHash, amount, deadline)` — sem assinatura, `msg.sender` é quem paga
+4. **Caminho facilitado (gasless):** o pagador assina off-chain uma autorização EIP-712 (`X402Authorization{payer,payee,requestHash,amount,deadline}`); uma conta com `X402_RELAYER_ROLE` submete via `settleWithAuthorization(...)`
+5. Em ambos os caminhos, `requestHash` (hash da requisição HTTP off-chain, não um nonce sequencial) impede replay por `payer`
+6. `_settle` desconta `protocolFeeBps` do `amount` e transfere o líquido ao `payee` e a taxa ao `InfrastructureFund`, ambos via `safeTransferFrom` diretamente da allowance do pagador
+
+> [!warning] EIP-712 + Diamond
+> `SignatureLib` calcula o domain separator (`address(this)`, `block.chainid`) **em tempo de chamada**, nunca como `immutable` — variáveis `immutable` são gravadas no bytecode da facet durante seu próprio deploy e resolveriam para o endereço da facet, não do Diamond, quebrando toda verificação de assinatura. Ver [[x402-facilitator#Por que o domain separator é calculado em tempo de chamada (não immutable)]].
+
 ## Segurança
 
 - **Diamond:** Upgrades via `diamondCut` restritos ao contract owner
@@ -179,6 +223,7 @@ contracts/
 
 | Data | Versão | Descrição |
 |---|---|---|
+| 2026-08-24 | 0.3.0 | Adicionados EIP-8004 (Trust Layer), EIP-8183 (AgentCommerceFacet) e x402 (X402FacilitatorFacet): 3 novos namespaces de storage, 5 novas facets, fluxos de comércio agente-a-agente e x402 |
 | 2025-07-12 | 0.2.0 | Reescrita completa: Diamond EIP-2535, Diamond Storage, facets, novos fluxos |
 | 2025-07-11 | 0.1.0 | Documentação inicial: padrões de projeto, camadas, fluxo de identidade, segurança |
 

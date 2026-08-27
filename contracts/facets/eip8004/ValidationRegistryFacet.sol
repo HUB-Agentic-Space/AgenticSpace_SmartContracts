@@ -97,7 +97,7 @@ contract ValidationRegistryFacet {
         return req;
     }
 
-    function getValidationsByAgent(bytes32 agentId) external view returns (uint256[] memory) {
+    function getValidationIdsByAgent(bytes32 agentId) external view returns (uint256[] memory) {
         return Eip8004Storage.eip8004Storage().validationsByAgent[agentId];
     }
 

@@ -63,7 +63,9 @@ async function main(): Promise<void> {
   const commerceDisputeWindow = BigInt(process.env.COMMERCE_DISPUTE_WINDOW_SECONDS ?? String(3 * 24 * 60 * 60));
   const x402ProtocolFeeBps = BigInt(process.env.X402_PROTOCOL_FEE_BPS ?? "100");
 
-  const provider = new ethers.JsonRpcProvider(POLYGON_RPC_URL);
+  const provider = new ethers.JsonRpcProvider(POLYGON_RPC_URL, undefined, {
+    batchMaxCount: 1,
+  });
   const deployer = new ethers.Wallet(RELAYER_PRIVATE_KEY, provider);
   const feeData = await provider.getFeeData();
   const gasPrice = feeData.gasPrice ?? 0n;
