@@ -44,6 +44,18 @@
 > não constitui uma auditoria externa independente — apenas revisão
 > manual interna + testes automatizados.
 
+### Revisão adicional — CASSwapUSDCPOLFacet (2026-09-17)
+
+| Campo | Valor |
+|-------|-------|
+| **Data** | 2026-09-17 |
+| **Responsável** | Devin |
+| **Contratos revisados** | `CASSwapUSDCPOLFacet.sol`, `LibCASSwap.sol`, `ICASSwapUSDCPOL.sol` |
+| **Alterações** | Guarda de impacto máximo (`maxImpactBps`) nos setters de ratio; novo `setAllSwapRatios` mantendo setters individuais; `setSwapFeeBps`; `setMaxImpactBps`; otimizações seguras de gas com `unchecked` e cache de variáveis em memória. |
+| **Ferramentas executadas** | `npm run compile` (sucesso, evm target cancun). Testes unitários do `CASSwapUSDCPOLFacet.test.ts` **não passaram** por falha no fixture de teste (slot hack de owner), não por regressão da lógica. |
+| **Auditoria estática/dinâmica** | **Pendente** — `solhint`, `slither`, `mythril` e `echidna` ainda devem ser executados; fuzzing das novas invariantes de impacto e atomicidade do `setAllSwapRatios` é obrigatório antes de mainnet. |
+| **Notas de segurança** | Os novos setters preservam `DiamondAccessControl.enforceRoleOrOwner`; `setSwapFeeBps` limita fee a `BPS_DENOMINATOR` (10000 bps); `setMaxImpactBps` limita a 10000 bps; a guarda de impacto evita mudanças abruptas de preço. A otimização de gas com `unchecked` é validada por `swapFeeBps <= BPS_DENOMINATOR`. CEI e `SafeERC20` preservados. |
+
 ---
 
 ## Legenda

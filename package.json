@@ -126,6 +126,8 @@
     "v3:rebalance:polygon": "hardhat run scripts/deploy/07_rebalance_v3_position.ts --network polygon",
     "diamond:deposit-pol:polygon": "hardhat run scripts/casswap/17_deposit_pol_to_diamond.ts --network polygon",
     "diamond:set-ratio:polygon": "hardhat run scripts/casswap/19_set_diamond_ratio_target.ts --network polygon",
+    "diamond:ratio:market:polygon": "hardhat run scripts/casswap/22_set_diamond_ratio_from_market.ts --network polygon",
+    "diamond:ratio:market:dry-run:polygon": "DRY_RUN=true hardhat run scripts/casswap/22_set_diamond_ratio_from_market.ts --network polygon",
     "dex:scan": "tsx scripts/casswap/21_balance_dex_prices.ts --scan",
     "dex:balance:execute": "tsx scripts/casswap/21_balance_dex_prices.ts --execute",
     "dex:allbuy": "tsx scripts/casswap/21_balance_dex_prices.ts --allbuy",

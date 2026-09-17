@@ -32,6 +32,7 @@ contract CASSwapUSDCPOLFacet is ICASSwapUSDCPOL {
     uint8 internal constant CURRENCY_USDC = 1;
 
     bytes32 internal constant RATIO_SETTER_ROLE_HASH = keccak256("RATIO_SETTER_ROLE");
+    uint256 internal constant BPS_DENOMINATOR = 10000;
 
     // --- Reentrancy guard (Diamond Storage slot, compartilhado com o wrapper) ---
     bytes32 internal constant REENTRANCY_SLOT =
@@ -49,6 +50,9 @@ contract CASSwapUSDCPOLFacet is ICASSwapUSDCPOL {
     error MsgValueMismatch(uint256 expected, uint256 sent);
     error BudgetExceeded(uint256 requested, uint256 remaining);
     error InsufficientReserve(uint256 available, uint256 required);
+    error InvalidFeeBps();
+    error InvalidImpactBps();
+    error RatioChangeExceeded(uint256 oldNum, uint256 oldDen, uint256 newNum, uint256 newDen, uint256 maxImpactBps);
 
     modifier nonReentrant() {
         bytes32 slot = REENTRANCY_SLOT;
@@ -68,6 +72,30 @@ contract CASSwapUSDCPOLFacet is ICASSwapUSDCPOL {
     modifier ensureDeadline(uint256 deadline) {
         if (block.timestamp > deadline) revert DeadlineExpired(deadline, block.timestamp);
         _;
+    }
+
+    // -----------------------------------------------------------------------
+    // Helpers
+    // -----------------------------------------------------------------------
+
+    function _requireRatioWithinImpact(
+        uint256 oldNum,
+        uint256 oldDen,
+        uint256 newNum,
+        uint256 newDen,
+        uint256 maxImpactBps
+    ) internal pure {
+        if (oldNum == 0 || oldDen == 0 || maxImpactBps == 0) return;
+
+        uint256 newScaled = newNum * oldDen;
+        uint256 oldScaled = oldNum * newDen;
+        if (newScaled == oldScaled) return;
+
+        uint256 diff = newScaled > oldScaled ? newScaled - oldScaled : oldScaled - newScaled;
+        uint256 impact = (diff * BPS_DENOMINATOR) / oldScaled;
+        if (impact > maxImpactBps) {
+            revert RatioChangeExceeded(oldNum, oldDen, newNum, newDen, maxImpactBps);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -112,6 +140,7 @@ contract CASSwapUSDCPOLFacet is ICASSwapUSDCPOL {
         DiamondAccessControl.enforceRoleOrOwner(RATIO_SETTER_ROLE_HASH);
         if (numerator == 0 || denominator == 0) revert InvalidRatioArg();
         CASSwapStorage.Data storage s = CASSwapStorage.layout();
+        _requireRatioWithinImpact(s.ratioPolNum, s.ratioPolDen, numerator, denominator, s.maxImpactBps);
         s.ratioPolNum = numerator;
         s.ratioPolDen = denominator;
         emit RatioUpdated(CURRENCY_POL, numerator, denominator, msg.sender);
@@ -125,6 +154,7 @@ contract CASSwapUSDCPOLFacet is ICASSwapUSDCPOL {
         DiamondAccessControl.enforceRoleOrOwner(RATIO_SETTER_ROLE_HASH);
         if (numerator == 0 || denominator == 0) revert InvalidRatioArg();
         CASSwapStorage.Data storage s = CASSwapStorage.layout();
+        _requireRatioWithinImpact(s.ratioUsdcNum, s.ratioUsdcDen, numerator, denominator, s.maxImpactBps);
         s.ratioUsdcNum = numerator;
         s.ratioUsdcDen = denominator;
         emit RatioUpdated(CURRENCY_USDC, numerator, denominator, msg.sender);
@@ -141,6 +171,7 @@ contract CASSwapUSDCPOLFacet is ICASSwapUSDCPOL {
         DiamondAccessControl.enforceRoleOrOwner(RATIO_SETTER_ROLE_HASH);
         if (numerator == 0 || denominator == 0) revert InvalidRatioArg();
         CASSwapStorage.Data storage s = CASSwapStorage.layout();
+        _requireRatioWithinImpact(s.ratioPolSellNum, s.ratioPolSellDen, numerator, denominator, s.maxImpactBps);
         s.ratioPolSellNum = numerator;
         s.ratioPolSellDen = denominator;
         emit RatioUpdated(2, numerator, denominator, msg.sender);
@@ -153,9 +184,69 @@ contract CASSwapUSDCPOLFacet is ICASSwapUSDCPOL {
         DiamondAccessControl.enforceRoleOrOwner(RATIO_SETTER_ROLE_HASH);
         if (numerator == 0 || denominator == 0) revert InvalidRatioArg();
         CASSwapStorage.Data storage s = CASSwapStorage.layout();
+        _requireRatioWithinImpact(s.ratioUsdcSellNum, s.ratioUsdcSellDen, numerator, denominator, s.maxImpactBps);
         s.ratioUsdcSellNum = numerator;
         s.ratioUsdcSellDen = denominator;
         emit RatioUpdated(3, numerator, denominator, msg.sender);
+    }
+
+    // -----------------------------------------------------------------------
+    // Governance / configuration (RATIO_SETTER_ROLE ou owner)
+    // -----------------------------------------------------------------------
+
+    function setSwapFeeBps(uint256 newFeeBps) external override whenNotPaused {
+        DiamondAccessControl.enforceRoleOrOwner(RATIO_SETTER_ROLE_HASH);
+        if (newFeeBps > BPS_DENOMINATOR) revert InvalidFeeBps();
+        CASSwapStorage.Data storage s = CASSwapStorage.layout();
+        uint256 oldFeeBps = s.swapFeeBps;
+        s.swapFeeBps = newFeeBps;
+        emit SwapFeeUpdated(oldFeeBps, newFeeBps);
+    }
+
+    function setMaxImpactBps(uint256 newMaxImpactBps) external override whenNotPaused {
+        DiamondAccessControl.enforceRoleOrOwner(RATIO_SETTER_ROLE_HASH);
+        if (newMaxImpactBps > BPS_DENOMINATOR) revert InvalidImpactBps();
+        CASSwapStorage.Data storage s = CASSwapStorage.layout();
+        uint256 oldMaxImpactBps = s.maxImpactBps;
+        s.maxImpactBps = newMaxImpactBps;
+        emit MaxImpactBpsUpdated(oldMaxImpactBps, newMaxImpactBps);
+    }
+
+    function setAllSwapRatios(
+        uint256 polBuyNum,
+        uint256 polBuyDen,
+        uint256 usdcBuyNum,
+        uint256 usdcBuyDen,
+        uint256 polSellNum,
+        uint256 polSellDen,
+        uint256 usdcSellNum,
+        uint256 usdcSellDen
+    ) external override whenNotPaused {
+        DiamondAccessControl.enforceRoleOrOwner(RATIO_SETTER_ROLE_HASH);
+        if (polBuyNum == 0 || polBuyDen == 0) revert InvalidRatioArg();
+        if (usdcBuyNum == 0 || usdcBuyDen == 0) revert InvalidRatioArg();
+        if (polSellNum == 0 || polSellDen == 0) revert InvalidRatioArg();
+        if (usdcSellNum == 0 || usdcSellDen == 0) revert InvalidRatioArg();
+
+        CASSwapStorage.Data storage s = CASSwapStorage.layout();
+        _requireRatioWithinImpact(s.ratioPolNum, s.ratioPolDen, polBuyNum, polBuyDen, s.maxImpactBps);
+        _requireRatioWithinImpact(s.ratioUsdcNum, s.ratioUsdcDen, usdcBuyNum, usdcBuyDen, s.maxImpactBps);
+        _requireRatioWithinImpact(s.ratioPolSellNum, s.ratioPolSellDen, polSellNum, polSellDen, s.maxImpactBps);
+        _requireRatioWithinImpact(s.ratioUsdcSellNum, s.ratioUsdcSellDen, usdcSellNum, usdcSellDen, s.maxImpactBps);
+
+        s.ratioPolNum = polBuyNum;
+        s.ratioPolDen = polBuyDen;
+        s.ratioUsdcNum = usdcBuyNum;
+        s.ratioUsdcDen = usdcBuyDen;
+        s.ratioPolSellNum = polSellNum;
+        s.ratioPolSellDen = polSellDen;
+        s.ratioUsdcSellNum = usdcSellNum;
+        s.ratioUsdcSellDen = usdcSellDen;
+
+        emit RatioUpdated(CURRENCY_POL, polBuyNum, polBuyDen, msg.sender);
+        emit RatioUpdated(CURRENCY_USDC, usdcBuyNum, usdcBuyDen, msg.sender);
+        emit RatioUpdated(2, polSellNum, polSellDen, msg.sender);
+        emit RatioUpdated(3, usdcSellNum, usdcSellDen, msg.sender);
     }
 
     // -----------------------------------------------------------------------

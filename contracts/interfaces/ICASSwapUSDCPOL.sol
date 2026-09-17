@@ -17,6 +17,7 @@ interface ICASSwapUSDCPOL {
     event CASSwapUSDCPOLInitialized(address indexed casToken, address indexed usdcToken);
     event RatioUpdated(uint8 indexed pair, uint256 numerator, uint256 denominator, address indexed updater);
     event SwapFeeUpdated(uint256 oldFeeBps, uint256 newFeeBps);
+    event MaxImpactBpsUpdated(uint256 oldMaxImpactBps, uint256 newMaxImpactBps);
 
     event CASBoughtWithPOL(address indexed buyer, uint256 polIn, uint256 casOut, uint256 fee);
     event CASSoldForPOL(address indexed seller, uint256 casIn, uint256 polOut, uint256 fee);
@@ -39,6 +40,18 @@ interface ICASSwapUSDCPOL {
     function setSwapRatioUSDC(uint256 numerator, uint256 denominator) external;
     function setSwapRatioSell(uint256 numerator, uint256 denominator) external;
     function setSwapRatioUSDCSell(uint256 numerator, uint256 denominator) external;
+    function setAllSwapRatios(
+        uint256 polBuyNum,
+        uint256 polBuyDen,
+        uint256 usdcBuyNum,
+        uint256 usdcBuyDen,
+        uint256 polSellNum,
+        uint256 polSellDen,
+        uint256 usdcSellNum,
+        uint256 usdcSellDen
+    ) external;
+    function setSwapFeeBps(uint256 newFeeBps) external;
+    function setMaxImpactBps(uint256 newMaxImpactBps) external;
 
     // -----------------------------------------------------------------------
     // Swaps

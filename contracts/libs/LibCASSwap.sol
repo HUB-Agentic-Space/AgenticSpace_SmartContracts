@@ -42,11 +42,16 @@ library LibCASSwap {
         address to
     ) internal returns (uint256 casOut, uint256 fee) {
         if (polIn == 0) revert ZeroAmount();
-        if (s.ratioPolNum == 0 || s.ratioPolDen == 0) revert InvalidRatio();
+        uint256 num = s.ratioPolNum;
+        uint256 den = s.ratioPolDen;
+        uint256 feeBps = s.swapFeeBps;
+        if (num == 0 || den == 0) revert InvalidRatio();
 
-        fee = (polIn * s.swapFeeBps) / BPS_DENOMINATOR;
-        uint256 net = polIn - fee;
-        casOut = (net * s.ratioPolNum) / s.ratioPolDen;
+        unchecked {
+            fee = (polIn * feeBps) / BPS_DENOMINATOR;
+            uint256 net = polIn - fee;
+            casOut = (net * num) / den;
+        }
         if (casOut == 0) revert ZeroAmount();
         if (casOut < minCasOut) revert SlippageExceeded(minCasOut, casOut);
 
@@ -71,12 +76,16 @@ library LibCASSwap {
         // Use sell ratio if set, otherwise fall back to buy ratio (legacy compat)
         uint256 sellNum = s.ratioPolSellNum != 0 ? s.ratioPolSellNum : s.ratioPolNum;
         uint256 sellDen = s.ratioPolSellDen != 0 ? s.ratioPolSellDen : s.ratioPolDen;
+        uint256 feeBps = s.swapFeeBps;
         if (sellNum == 0 || sellDen == 0) revert InvalidRatio();
 
-        uint256 polEq = (casIn * sellDen) / sellNum;
-        if (polEq == 0) revert ZeroAmount();
-        fee = (polEq * s.swapFeeBps) / BPS_DENOMINATOR;
-        polOut = polEq - fee;
+        uint256 polEq;
+        unchecked {
+            polEq = (casIn * sellDen) / sellNum;
+            if (polEq == 0) revert ZeroAmount();
+            fee = (polEq * feeBps) / BPS_DENOMINATOR;
+            polOut = polEq - fee;
+        }
         if (polOut < minPolOut) revert SlippageExceeded(minPolOut, polOut);
 
         uint256 polBal = address(this).balance;
@@ -100,11 +109,17 @@ library LibCASSwap {
         address to
     ) internal returns (uint256 casOut, uint256 fee) {
         if (usdcIn == 0) revert ZeroAmount();
-        if (s.ratioUsdcNum == 0 || s.ratioUsdcDen == 0) revert InvalidRatio();
+        uint256 num = s.ratioUsdcNum;
+        uint256 den = s.ratioUsdcDen;
+        uint256 feeBps = s.swapFeeBps;
+        if (num == 0 || den == 0) revert InvalidRatio();
 
-        fee = (usdcIn * s.swapFeeBps) / BPS_DENOMINATOR;
-        uint256 net = usdcIn - fee;
-        casOut = (net * s.ratioUsdcNum) / s.ratioUsdcDen;
+        uint256 net;
+        unchecked {
+            fee = (usdcIn * feeBps) / BPS_DENOMINATOR;
+            net = usdcIn - fee;
+            casOut = (net * num) / den;
+        }
         if (casOut == 0) revert ZeroAmount();
         if (casOut < minCasOut) revert SlippageExceeded(minCasOut, casOut);
 
@@ -130,12 +145,16 @@ library LibCASSwap {
         // Use sell ratio if set, otherwise fall back to buy ratio (legacy compat)
         uint256 sellNum = s.ratioUsdcSellNum != 0 ? s.ratioUsdcSellNum : s.ratioUsdcNum;
         uint256 sellDen = s.ratioUsdcSellDen != 0 ? s.ratioUsdcSellDen : s.ratioUsdcDen;
+        uint256 feeBps = s.swapFeeBps;
         if (sellNum == 0 || sellDen == 0) revert InvalidRatio();
 
-        uint256 usdcEq = (casIn * sellDen) / sellNum;
-        if (usdcEq == 0) revert ZeroAmount();
-        fee = (usdcEq * s.swapFeeBps) / BPS_DENOMINATOR;
-        usdcOut = usdcEq - fee;
+        uint256 usdcEq;
+        unchecked {
+            usdcEq = (casIn * sellDen) / sellNum;
+            if (usdcEq == 0) revert ZeroAmount();
+            fee = (usdcEq * feeBps) / BPS_DENOMINATOR;
+            usdcOut = usdcEq - fee;
+        }
         if (usdcOut < minUsdcOut) revert SlippageExceeded(minUsdcOut, usdcOut);
 
         uint256 usdcBal = s.usdcToken.balanceOf(address(this));

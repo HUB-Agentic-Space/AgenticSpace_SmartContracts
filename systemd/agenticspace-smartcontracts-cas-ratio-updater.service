@@ -1,0 +1,20 @@
+[Unit]
+Description=AgenticSpace — CAS Diamond ratio updater from market price
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/carlosdelfino/workspace/Rapport/AgenticSpace/smartcontracts
+; O .env com RELAYER_PRIVATE_KEY e demais secrets deve estar fora do repo,
+; com permissao 600, e nunca versionado.
+EnvironmentFile=-/home/carlosdelfino/.config/agenticspace/casswap.env
+Environment="NODE_ENV=production"
+Environment="DOTENV_CONFIG_PATH=/home/carlosdelfino/.config/agenticspace/casswap.env"
+ExecStart=/usr/local/bin/npm run diamond:ratio:market:polygon
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=agenticspace-cas-ratio-updater
+Restart=no
+
+[Install]
+WantedBy=default.target
