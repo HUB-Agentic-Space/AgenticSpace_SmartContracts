@@ -14,6 +14,7 @@ describe("CASSwap Asymmetric Ratios", function () {
     "function setSwapRatioUSDC(uint256,uint256) external",
     "function setSwapRatioSell(uint256,uint256) external",
     "function setSwapRatioUSDCSell(uint256,uint256) external",
+    "function setMaxImpactBps(uint256) external",
     "function getRatio() view returns (uint256,uint256)",
     "function getRatioUSDC() view returns (uint256,uint256)",
     "function getRatioSell() view returns (uint256,uint256)",
@@ -88,6 +89,7 @@ describe("CASSwap Asymmetric Ratios", function () {
     await usdcToken.waitForDeployment();
 
     diamond = await deployDiamond();
+    await diamond.setMaxImpactBps(0n);
 
     await casToken.mint(await diamond.getAddress(), ethers.parseEther("1000000"));
     await owner.sendTransaction({
@@ -139,6 +141,7 @@ describe("CASSwap Asymmetric Ratios", function () {
 
   it("getRatioSell should fall back to buy ratio when sell ratio is 0", async function () {
     const freshDiamond = await deployDiamond();
+    await freshDiamond.setMaxImpactBps(0n);
     await freshDiamond.setSwapRatio(ethers.parseEther("1000"), ethers.parseEther("1"));
 
     const [sellNum, sellDen] = await freshDiamond.getRatioSell();

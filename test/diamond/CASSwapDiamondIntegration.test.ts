@@ -63,8 +63,12 @@ describe("CASSwap Diamond Integration", () => {
     // Init swap
     const swap = await ethers.getContractAt("CASSwapUSDCPOLFacet", diamondAddr);
     await (await swap.initCASSwapUSDCPOL(casAddr, usdcAddr)).wait();
+    // Temporarily disable impact guard to set the decimal-normalized USDC ratio
+    await (await swap.connect(owner).setMaxImpactBps(0n)).wait();
     // USDC ratio: 1 USDC = 1 CAS  =>  1e6 USDC base units = 1e18 CAS base units  =>  num/den = 1e12/1
     await (await swap.connect(owner).setSwapRatioUSDC(1_000_000_000_000n, 1n)).wait();
+    // Restore a permissive guard for the "owner can set ratios" test
+    await (await swap.connect(owner).setMaxImpactBps(10000n)).wait();
 
     // Fund Diamond
     await casToken.mint(diamondAddr, ethers.parseEther("100000"));

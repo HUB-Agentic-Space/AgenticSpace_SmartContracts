@@ -1,3 +1,12 @@
+![header](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=200&section=header&text=Security%20Checklist%20%E2%80%94%20Smart%20Contracts%20Solidity&fontSize=36&fontAlignY=35&animation=twinkling)
+
+![visitors](https://visitor-badge.laobi.icu/badge?page_id=RapportTecnologia.AgenticSpace.smartcontracts_security-checklist)
+
+[![License: CC BY-SA 4.0](https://img.shields.io/badge/License-CC_BY--SA_4.0-blue.svg)](https://creativecommons.org/licenses/by-sa/4.0/)
+![Language: Portuguese](https://img.shields.io/badge/Language-Portuguese-brightgreen.svg)
+![Status](https://img.shields.io/badge/Status-Ongoing-yellow)
+[![GitHub Issues](https://img.shields.io/github/issues/RapportTecnologia/AgenticSpace)](https://github.com/RapportTecnologia/AgenticSpace/issues)
+
 # Security Checklist — Smart Contracts Solidity
 
 > **AVISO:** Este arquivo é o espelho operacional da regra
@@ -50,11 +59,11 @@
 |-------|-------|
 | **Data** | 2026-09-17 |
 | **Responsável** | Devin |
-| **Contratos revisados** | `CASSwapUSDCPOLFacet.sol`, `LibCASSwap.sol`, `ICASSwapUSDCPOL.sol` |
-| **Alterações** | Guarda de impacto máximo (`maxImpactBps`) nos setters de ratio; novo `setAllSwapRatios` mantendo setters individuais; `setSwapFeeBps`; `setMaxImpactBps`; otimizações seguras de gas com `unchecked` e cache de variáveis em memória. |
-| **Ferramentas executadas** | `npm run compile` (sucesso, evm target cancun). Testes unitários do `CASSwapUSDCPOLFacet.test.ts` **não passaram** por falha no fixture de teste (slot hack de owner), não por regressão da lógica. |
-| **Auditoria estática/dinâmica** | **Pendente** — `solhint`, `slither`, `mythril` e `echidna` ainda devem ser executados; fuzzing das novas invariantes de impacto e atomicidade do `setAllSwapRatios` é obrigatório antes de mainnet. |
-| **Notas de segurança** | Os novos setters preservam `DiamondAccessControl.enforceRoleOrOwner`; `setSwapFeeBps` limita fee a `BPS_DENOMINATOR` (10000 bps); `setMaxImpactBps` limita a 10000 bps; a guarda de impacto evita mudanças abruptas de preço. A otimização de gas com `unchecked` é validada por `swapFeeBps <= BPS_DENOMINATOR`. CEI e `SafeERC20` preservados. |
+| **Contratos revisados** | `CASSwapUSDCPOLFacet.sol`, `LibCASSwap.sol`, `ICASSwapUSDCPOL.sol`, `TraderGovernanceFacet.sol` |
+| **Alterações** | Guarda de impacto máximo (`maxImpactBps`) nos setters de ratio; novo `setAllSwapRatios` mantendo setters individuais; `setSwapFeeBps`; `setMaxImpactBps`; otimizações seguras de gas com `unchecked` e cache de variáveis em memória. Removidos `setSwapFeeBps` e `setMaxImpactBps` duplicados de `TraderGovernanceFacet` para evitar colisão de seletores no Diamond. |
+| **Ferramentas executadas** | `npx hardhat compile` (sucesso, evm target cancun). Testes CASSwap: 29 passing em `CASSwapUSDCPOLFacet.test.ts`, `CASSwapDiamondIntegration.test.ts`, `CASSwapAsymmetric.test.ts` e `CASSwapWrapperFacet.test.ts`. Slither direcionado executado sobre os arquivos CASSwap. |
+| **Auditoria estática/dinâmica** | Slither (Hardhat, include-paths CASSwap): 11 achados no escopo; nenhum HIGH/CRITICAL. Achados conhecidos/falsos positivos: `arbitrary-send-erc20` nos `transferFrom` de `LibCASSwap` (o parâmetro `from` é sempre `msg.sender` via facet); `divide-before-multiply` em `sellForPol`/`sellForUsdc` (perda de precisão mínima e aceitável para saída em POL/USDC); `timestamp` em `_accrueBudget` (uso padrão de `block.timestamp` para períodos); `low-level-calls` em `supportSwap`/`sellForPol` (transferências nativas com verificação `ok`); `naming-convention` em `RATIO_SETTER_ROLE()` (constante exposta como `pure` intencional). Mythril e Echidna ainda pendentes. |
+| **Notas de segurança** | Os novos setters preservam `DiamondAccessControl.enforceRoleOrOwner`; `setSwapFeeBps` limita fee a `BPS_DENOMINATOR` (10000 bps); `setMaxImpactBps` limita a 10000 bps; a guarda de impacto evita mudanças abruptas de preço. A otimização de gas com `unchecked` é validada por `swapFeeBps <= BPS_DENOMINATOR`. CEI e `SafeERC20` preservados. Todos os setters de configuração estão concentrados em `CASSwapUSDCPOLFacet`; `TraderGovernanceFacet` mantém `pauseSwap`/`unpauseSwap`, `setSlippageLimitBps`, orçamento e resgates. |
 
 ---
 
@@ -748,6 +757,9 @@ não como banco público de documentos pessoais.
 
 | Data | Responsável | Contratos revisados | Alterações |
 |------|------------|---------------------|------------|
+| 2026-09-17 | Devin | CASSwapUSDCPOLFacet, LibCASSwap, ICASSwapUSDCPOL, TraderGovernanceFacet | Fix da suíte CASSwap: 29 testes passando, colisão de seletores resolvida, slither direcionado sem HIGH/CRITICAL. |
 | 2026-08-24 | Devin | 8 contratos (EIP-8004 Trust Layer + EIP-8183 AgentCommerceFacet + x402 Facilitator) | Revisão manual + verificação da suíte de testes (`Eip8004Eip8183X402.test.ts`, 14 passing). Itens marcados em Controle de Acesso, Autenticação/Assinaturas (EIP-712), Reentrância/CEI e Privacidade. Slither/Mythril/Echidna **não executados** — pendência registrada para pré-mainnet. |
 | 2026-07-14 | _Inicial_ | — | Criação do arquivo espelho conforme regra `solidity-security.md` |
 | 2026-07-14 | Cascade (AI) | 40+ contratos | Revisão manual completa. 2 CRÍTICO, 9 ALTO, 8 MÉDIO. Ver `security-audit-2025-07-14.md` |
+
+![footer](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=100&section=footer&animation=twinkling)

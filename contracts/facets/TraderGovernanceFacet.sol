@@ -24,7 +24,6 @@ contract TraderGovernanceFacet {
 
     error ZeroAddress();
     error ZeroAmount();
-    error FeeTooHigh(uint256 provided, uint256 max);
     error InvalidPeriod();
     error NotInitialized();
     error AlreadyUnpaused();
@@ -32,8 +31,6 @@ contract TraderGovernanceFacet {
 
     event SwapPaused(address indexed account);
     event SwapUnpaused(address indexed account);
-    event SwapFeeSet(uint256 oldFeeBps, uint256 newFeeBps);
-    event MaxImpactBpsSet(uint256 oldValue, uint256 newValue);
     event SlippageLimitBpsSet(uint256 oldValue, uint256 newValue);
     event MonthlyBudgetSet(uint256 oldBudget, uint256 newBudget);
     event PeriodDurationSet(uint256 oldDuration, uint256 newDuration);
@@ -70,21 +67,6 @@ contract TraderGovernanceFacet {
     // -----------------------------------------------------------------------
     // Configurações de execução (owner)
     // -----------------------------------------------------------------------
-
-    function setSwapFeeBps(uint256 feeBps) external onlyOwner {
-        if (feeBps > 1000) revert FeeTooHigh(feeBps, 1000); // máx 10%
-        CASSwapStorage.Data storage s = CASSwapStorage.layout();
-        uint256 old = s.swapFeeBps;
-        s.swapFeeBps = feeBps;
-        emit SwapFeeSet(old, feeBps);
-    }
-
-    function setMaxImpactBps(uint256 maxImpactBps) external onlyOwner {
-        CASSwapStorage.Data storage s = CASSwapStorage.layout();
-        uint256 old = s.maxImpactBps;
-        s.maxImpactBps = maxImpactBps;
-        emit MaxImpactBpsSet(old, maxImpactBps);
-    }
 
     function setSlippageLimitBps(uint256 slippageLimitBps) external onlyOwner {
         CASSwapStorage.Data storage s = CASSwapStorage.layout();
