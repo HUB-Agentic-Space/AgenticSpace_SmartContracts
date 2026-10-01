@@ -142,13 +142,51 @@ describe("CASSwapUSDCPOLFacet", () => {
       await expect(swap.connect(owner).setAllSwapRatios(
         101n, 100n,
         10001n, 10000n,
-        100n, 101n,
-        100n, 101n,
+        102n, 100n,
+        102n, 100n,
       ))
         .to.emit(swap, "RatioUpdated");
       const [polNum, polDen] = await swap.getRatio();
       expect(polNum).to.equal(101n);
       expect(polDen).to.equal(100n);
+    });
+  });
+
+  describe("Spread invariants", () => {
+    it("rejects inverted atomic POL and USDC spreads without partial writes", async () => {
+      const { swap } = await loadFixture(deployFixture);
+      await expect(swap.setAllSwapRatios(2n, 1n, 1n, 1n, 1n, 1n, 1n, 1n))
+        .to.be.revertedWithCustomError(swap, "ReverseSpread").withArgs(0);
+      await expect(swap.setAllSwapRatios(1n, 1n, 2n, 1n, 1n, 1n, 1n, 1n))
+        .to.be.revertedWithCustomError(swap, "ReverseSpread").withArgs(1);
+      expect(await swap.getRatio()).to.deep.equal([1n, 1n]);
+      expect(await swap.getRatioUSDC()).to.deep.equal([1n, 1n]);
+    });
+
+    it("rejects reversed spread through each individual setter", async () => {
+      const { swap } = await loadFixture(deployFixture);
+      await swap.setMaxImpactBps(0n);
+      await swap.setAllSwapRatios(1n, 1n, 1n, 1n, 2n, 1n, 2n, 1n);
+      await expect(swap.setSwapRatio(3n, 1n)).to.be.revertedWithCustomError(swap, "ReverseSpread");
+      await expect(swap.setSwapRatioUSDC(3n, 1n)).to.be.revertedWithCustomError(swap, "ReverseSpread");
+      await expect(swap.setSwapRatioSell(1n, 2n)).to.be.revertedWithCustomError(swap, "ReverseSpread");
+      await expect(swap.setSwapRatioUSDCSell(1n, 2n)).to.be.revertedWithCustomError(swap, "ReverseSpread");
+    });
+
+    it("compares full-precision ratios even if cross products exceed uint256", async () => {
+      const { swap } = await loadFixture(deployFixture);
+      await swap.setMaxImpactBps(0n);
+      const n = 1n << 200n;
+      await swap.setAllSwapRatios(n, n, n, n, n, n, n, n);
+      await expect(swap.setAllSwapRatios(n + 1n, n, n, n, n, n, n, n))
+        .to.be.revertedWithCustomError(swap, "ReverseSpread");
+    });
+
+    it("allows a normal spread with equivalent differently-scaled fractions", async () => {
+      const { swap } = await loadFixture(deployFixture);
+      await swap.setMaxImpactBps(0n);
+      await swap.setAllSwapRatios(1n, 2n, 100n, 200n, 2n, 4n, 1000n, 2000n);
+      expect(await swap.getRatio()).to.deep.equal([1n, 2n]);
     });
   });
 

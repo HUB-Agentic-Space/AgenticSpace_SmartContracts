@@ -1,0 +1,12 @@
+[Unit]
+Description=Run CASSwap Diamond cut after 48-hour timelock
+
+[Timer]
+OnCalendar=2026-09-20 02:32:00 UTC
+OnUnitActiveSec=5min
+AccuracySec=15s
+Persistent=true
+Unit=agenticspace-casswap-timelock-execute.service
+
+[Install]
+WantedBy=timers.target

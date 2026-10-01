@@ -5,10 +5,19 @@ import { resolve } from "path";
 dotenv.config({ path: resolve(__dirname, "..", ".env") });
 
 /**
- * Aumenta o swapFeeBps no Diamond para criar spread imediato.
- * Usa RELAYER_PRIVATE_KEY (Diamond owner).
+ * Define o swapFeeBps no Diamond (taxa cobrada por transação de swap).
+ * Usa RELAYER_PRIVATE_KEY (Diamond owner ou RATIO_SETTER_ROLE).
+ *
+ * Atenção (mainnet): o owner do Diamond é o Timelock 0x6e14...d4B5 — a
+ * alteração passa pelo fluxo Safe 2-de-3 -> timelock (delay 48h):
+ *   scripts/deploy/37_prepare_casswap_fee_timelock.ts (gera o payload)
+ *   scripts/deploy/38_schedule_casswap_fee.ts        (Safe agenda no timelock)
+ *   scripts/deploy/39_execute_casswap_fee.ts         (executa após o delay)
+ * Este script direto continua válido para ambientes onde o signer ainda
+ * detém RATIO_SETTER_ROLE/ownership (ex.: testnet).
  *
  * Uso: npx hardhat run scripts/set_swap_fee.ts --network polygon
+ *      SWAP_FEE_BPS=50 npx hardhat run scripts/set_swap_fee.ts --network polygon
  */
 
 const ABI = [
@@ -26,7 +35,7 @@ async function main(): Promise<void> {
   const relayer = new ethers.Wallet(relayerKey, provider);
   const diamond = new ethers.Contract(diamondAddr, ABI, relayer);
 
-  const feeArg = process.env.SWAP_FEE_BPS || "300"; // default 3%
+  const feeArg = process.env.SWAP_FEE_BPS || "50"; // default 0.5%
   const newFee = BigInt(feeArg);
 
   console.log(`\n  Diamond: ${diamondAddr}`);

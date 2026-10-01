@@ -47,7 +47,7 @@ describe("CASSwap Diamond Integration", () => {
     const diamondAddr = await diamond.getAddress();
 
     // Deploy new facets
-    const facetNames = ["CASSwapUSDCPOLFacet", "CASSwapWrapperFacet", "TraderGovernanceFacet"];
+    const facetNames = ["CASSwapUSDCPOLFacet", "CASSwapWrapperFacet", "TraderGovernanceFacet", "AccessControlFacet"];
     const cuts: IDiamondCut.FacetCutStruct[] = [];
     for (const name of facetNames) {
       const Factory = await ethers.getContractFactory(name);
@@ -171,6 +171,29 @@ describe("CASSwap Diamond Integration", () => {
       .to.be.revertedWithCustomError(swap, "SwapPaused");
 
     await (await gov.connect(owner).unpauseSwap()).wait();
+    expect(await swap.isSwapPaused()).to.be.false;
+  });
+
+  it("pauser role can pause and unpause swaps; unrelated user cannot", async () => {
+    const { diamondAddr, owner, user1 } = await loadFixture(deployFixture);
+    const [, , user2] = await ethers.getSigners();
+    const gov = await ethers.getContractAt("TraderGovernanceFacet", diamondAddr);
+    const swap = await ethers.getContractAt("CASSwapUSDCPOLFacet", diamondAddr);
+    const access = await ethers.getContractAt("AccessControlFacet", diamondAddr);
+    const PAUSER_ROLE = ethers.keccak256(ethers.toUtf8Bytes("PAUSER_ROLE"));
+
+    await expect(gov.connect(user2).pauseSwap()).to.be.reverted;
+
+    await (await access.connect(owner).grantRole(PAUSER_ROLE, user1.address)).wait();
+    expect(await access.hasRole(PAUSER_ROLE, user1.address)).to.be.true;
+
+    await (await gov.connect(user1).pauseSwap()).wait();
+    expect(await swap.isSwapPaused()).to.be.true;
+
+    await expect(swap.connect(user2).buyCASWithPOL(0n, await getDeadline(), { value: ethers.parseEther("1") }))
+      .to.be.revertedWithCustomError(swap, "SwapPaused");
+
+    await (await gov.connect(user1).unpauseSwap()).wait();
     expect(await swap.isSwapPaused()).to.be.false;
   });
 });

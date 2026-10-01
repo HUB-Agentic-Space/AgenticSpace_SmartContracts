@@ -8,6 +8,7 @@ import { LibCASSwap } from "../libs/LibCASSwap.sol";
 import { ICASSwapUSDCPOL } from "../interfaces/ICASSwapUSDCPOL.sol";
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /**
  * @title CASSwapUSDCPOLFacet
@@ -30,6 +31,8 @@ contract CASSwapUSDCPOLFacet is ICASSwapUSDCPOL {
 
     uint8 internal constant CURRENCY_POL = 0;
     uint8 internal constant CURRENCY_USDC = 1;
+    uint8 internal constant CURRENCY_BRLA = 2;
+    uint8 internal constant CURRENCY_CAS = 3;
 
     bytes32 internal constant RATIO_SETTER_ROLE_HASH = keccak256("RATIO_SETTER_ROLE");
     uint256 internal constant BPS_DENOMINATOR = 10000;
@@ -53,6 +56,7 @@ contract CASSwapUSDCPOLFacet is ICASSwapUSDCPOL {
     error InvalidFeeBps();
     error InvalidImpactBps();
     error RatioChangeExceeded(uint256 oldNum, uint256 oldDen, uint256 newNum, uint256 newDen, uint256 maxImpactBps);
+    error ReverseSpread(uint8 currency);
 
     modifier nonReentrant() {
         bytes32 slot = REENTRANCY_SLOT;
@@ -77,6 +81,13 @@ contract CASSwapUSDCPOLFacet is ICASSwapUSDCPOL {
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
+
+    // CAS/quote ratios are inverse prices: buy ratio MUST be <= sell ratio.
+    function _requireNormalSpread(uint8 currency, uint256 bn, uint256 bd, uint256 sn, uint256 sd) internal pure {
+        (uint256 bh, uint256 bl) = Math.mul512(bn, sd);
+        (uint256 sh, uint256 sl) = Math.mul512(sn, bd);
+        if (bh > sh || (bh == sh && bl > sl)) revert ReverseSpread(currency);
+    }
 
     function _requireRatioWithinImpact(
         uint256 oldNum,
@@ -140,9 +151,13 @@ contract CASSwapUSDCPOLFacet is ICASSwapUSDCPOL {
         DiamondAccessControl.enforceRoleOrOwner(RATIO_SETTER_ROLE_HASH);
         if (numerator == 0 || denominator == 0) revert InvalidRatioArg();
         CASSwapStorage.Data storage s = CASSwapStorage.layout();
+        _requireNormalSpread(CURRENCY_POL, numerator, denominator,
+            s.ratioPolSellNum != 0 ? s.ratioPolSellNum : numerator,
+            s.ratioPolSellDen != 0 ? s.ratioPolSellDen : denominator);
         _requireRatioWithinImpact(s.ratioPolNum, s.ratioPolDen, numerator, denominator, s.maxImpactBps);
         s.ratioPolNum = numerator;
         s.ratioPolDen = denominator;
+        s.ratiosSetAt = uint64(block.timestamp);
         emit RatioUpdated(CURRENCY_POL, numerator, denominator, msg.sender);
     }
 
@@ -154,9 +169,13 @@ contract CASSwapUSDCPOLFacet is ICASSwapUSDCPOL {
         DiamondAccessControl.enforceRoleOrOwner(RATIO_SETTER_ROLE_HASH);
         if (numerator == 0 || denominator == 0) revert InvalidRatioArg();
         CASSwapStorage.Data storage s = CASSwapStorage.layout();
+        _requireNormalSpread(CURRENCY_USDC, numerator, denominator,
+            s.ratioUsdcSellNum != 0 ? s.ratioUsdcSellNum : numerator,
+            s.ratioUsdcSellDen != 0 ? s.ratioUsdcSellDen : denominator);
         _requireRatioWithinImpact(s.ratioUsdcNum, s.ratioUsdcDen, numerator, denominator, s.maxImpactBps);
         s.ratioUsdcNum = numerator;
         s.ratioUsdcDen = denominator;
+        s.ratiosSetAt = uint64(block.timestamp);
         emit RatioUpdated(CURRENCY_USDC, numerator, denominator, msg.sender);
     }
 
@@ -171,9 +190,11 @@ contract CASSwapUSDCPOLFacet is ICASSwapUSDCPOL {
         DiamondAccessControl.enforceRoleOrOwner(RATIO_SETTER_ROLE_HASH);
         if (numerator == 0 || denominator == 0) revert InvalidRatioArg();
         CASSwapStorage.Data storage s = CASSwapStorage.layout();
+        _requireNormalSpread(CURRENCY_POL, s.ratioPolNum, s.ratioPolDen, numerator, denominator);
         _requireRatioWithinImpact(s.ratioPolSellNum, s.ratioPolSellDen, numerator, denominator, s.maxImpactBps);
         s.ratioPolSellNum = numerator;
         s.ratioPolSellDen = denominator;
+        s.ratiosSetAt = uint64(block.timestamp);
         emit RatioUpdated(2, numerator, denominator, msg.sender);
     }
 
@@ -184,10 +205,60 @@ contract CASSwapUSDCPOLFacet is ICASSwapUSDCPOL {
         DiamondAccessControl.enforceRoleOrOwner(RATIO_SETTER_ROLE_HASH);
         if (numerator == 0 || denominator == 0) revert InvalidRatioArg();
         CASSwapStorage.Data storage s = CASSwapStorage.layout();
+        _requireNormalSpread(CURRENCY_USDC, s.ratioUsdcNum, s.ratioUsdcDen, numerator, denominator);
         _requireRatioWithinImpact(s.ratioUsdcSellNum, s.ratioUsdcSellDen, numerator, denominator, s.maxImpactBps);
         s.ratioUsdcSellNum = numerator;
         s.ratioUsdcSellDen = denominator;
+        s.ratiosSetAt = uint64(block.timestamp);
         emit RatioUpdated(3, numerator, denominator, msg.sender);
+    }
+
+    // -----------------------------------------------------------------------
+    // BRLA — configuração (owner) e ratios (RATIO_SETTER_ROLE ou owner)
+    // -----------------------------------------------------------------------
+
+    /// @notice Registra o token BRLA usado como moeda de cotação adicional.
+    /// @dev Apenas o owner do Diamond (governança). Configurável uma vez por
+    ///      upgrade; para trocar o endereço é preciso nova decisão de owner.
+    function setBRLAToken(address brlaToken) external {
+        LibDiamond.enforceIsContractOwner();
+        if (brlaToken == address(0)) revert ZeroAddress();
+        CASSwapStorage.layout().brlaToken = IERC20(brlaToken);
+        emit BRLATokenUpdated(brlaToken, msg.sender);
+    }
+
+    function setSwapRatioBRLA(uint256 numerator, uint256 denominator)
+        external
+        whenNotPaused
+    {
+        DiamondAccessControl.enforceRoleOrOwner(RATIO_SETTER_ROLE_HASH);
+        if (numerator == 0 || denominator == 0) revert InvalidRatioArg();
+        CASSwapStorage.Data storage s = CASSwapStorage.layout();
+        if (address(s.brlaToken) == address(0)) revert LibCASSwap.BRLANotConfigured();
+        _requireNormalSpread(CURRENCY_BRLA, numerator, denominator,
+            s.ratioBrlaSellNum != 0 ? s.ratioBrlaSellNum : numerator,
+            s.ratioBrlaSellDen != 0 ? s.ratioBrlaSellDen : denominator);
+        _requireRatioWithinImpact(s.ratioBrlaNum, s.ratioBrlaDen, numerator, denominator, s.maxImpactBps);
+        s.ratioBrlaNum = numerator;
+        s.ratioBrlaDen = denominator;
+        s.ratiosSetAt = uint64(block.timestamp);
+        emit RatioUpdated(4, numerator, denominator, msg.sender);
+    }
+
+    function setSwapRatioBRLASell(uint256 numerator, uint256 denominator)
+        external
+        whenNotPaused
+    {
+        DiamondAccessControl.enforceRoleOrOwner(RATIO_SETTER_ROLE_HASH);
+        if (numerator == 0 || denominator == 0) revert InvalidRatioArg();
+        CASSwapStorage.Data storage s = CASSwapStorage.layout();
+        if (address(s.brlaToken) == address(0)) revert LibCASSwap.BRLANotConfigured();
+        _requireNormalSpread(CURRENCY_BRLA, s.ratioBrlaNum, s.ratioBrlaDen, numerator, denominator);
+        _requireRatioWithinImpact(s.ratioBrlaSellNum, s.ratioBrlaSellDen, numerator, denominator, s.maxImpactBps);
+        s.ratioBrlaSellNum = numerator;
+        s.ratioBrlaSellDen = denominator;
+        s.ratiosSetAt = uint64(block.timestamp);
+        emit RatioUpdated(5, numerator, denominator, msg.sender);
     }
 
     // -----------------------------------------------------------------------
@@ -227,6 +298,8 @@ contract CASSwapUSDCPOLFacet is ICASSwapUSDCPOL {
         if (usdcBuyNum == 0 || usdcBuyDen == 0) revert InvalidRatioArg();
         if (polSellNum == 0 || polSellDen == 0) revert InvalidRatioArg();
         if (usdcSellNum == 0 || usdcSellDen == 0) revert InvalidRatioArg();
+        _requireNormalSpread(CURRENCY_POL, polBuyNum, polBuyDen, polSellNum, polSellDen);
+        _requireNormalSpread(CURRENCY_USDC, usdcBuyNum, usdcBuyDen, usdcSellNum, usdcSellDen);
 
         CASSwapStorage.Data storage s = CASSwapStorage.layout();
         _requireRatioWithinImpact(s.ratioPolNum, s.ratioPolDen, polBuyNum, polBuyDen, s.maxImpactBps);
@@ -242,11 +315,71 @@ contract CASSwapUSDCPOLFacet is ICASSwapUSDCPOL {
         s.ratioPolSellDen = polSellDen;
         s.ratioUsdcSellNum = usdcSellNum;
         s.ratioUsdcSellDen = usdcSellDen;
+        s.ratiosSetAt = uint64(block.timestamp);
 
         emit RatioUpdated(CURRENCY_POL, polBuyNum, polBuyDen, msg.sender);
         emit RatioUpdated(CURRENCY_USDC, usdcBuyNum, usdcBuyDen, msg.sender);
         emit RatioUpdated(2, polSellNum, polSellDen, msg.sender);
         emit RatioUpdated(3, usdcSellNum, usdcSellDen, msg.sender);
+    }
+
+    /// @dev Versão multi-ativo do setter atômico: inclui os ratios buy/sell
+    ///      de BRLA. Mantido separado para não alterar o seletor já
+    ///      publicado de setAllSwapRatios.
+    function setAllSwapRatiosV2(
+        uint256 polBuyNum,
+        uint256 polBuyDen,
+        uint256 usdcBuyNum,
+        uint256 usdcBuyDen,
+        uint256 brlaBuyNum,
+        uint256 brlaBuyDen,
+        uint256 polSellNum,
+        uint256 polSellDen,
+        uint256 usdcSellNum,
+        uint256 usdcSellDen,
+        uint256 brlaSellNum,
+        uint256 brlaSellDen
+    ) external whenNotPaused {
+        DiamondAccessControl.enforceRoleOrOwner(RATIO_SETTER_ROLE_HASH);
+        if (polBuyNum == 0 || polBuyDen == 0) revert InvalidRatioArg();
+        if (usdcBuyNum == 0 || usdcBuyDen == 0) revert InvalidRatioArg();
+        if (brlaBuyNum == 0 || brlaBuyDen == 0) revert InvalidRatioArg();
+        if (polSellNum == 0 || polSellDen == 0) revert InvalidRatioArg();
+        if (usdcSellNum == 0 || usdcSellDen == 0) revert InvalidRatioArg();
+        if (brlaSellNum == 0 || brlaSellDen == 0) revert InvalidRatioArg();
+        _requireNormalSpread(CURRENCY_POL, polBuyNum, polBuyDen, polSellNum, polSellDen);
+        _requireNormalSpread(CURRENCY_USDC, usdcBuyNum, usdcBuyDen, usdcSellNum, usdcSellDen);
+        _requireNormalSpread(CURRENCY_BRLA, brlaBuyNum, brlaBuyDen, brlaSellNum, brlaSellDen);
+
+        CASSwapStorage.Data storage s = CASSwapStorage.layout();
+        if (address(s.brlaToken) == address(0)) revert LibCASSwap.BRLANotConfigured();
+        _requireRatioWithinImpact(s.ratioPolNum, s.ratioPolDen, polBuyNum, polBuyDen, s.maxImpactBps);
+        _requireRatioWithinImpact(s.ratioUsdcNum, s.ratioUsdcDen, usdcBuyNum, usdcBuyDen, s.maxImpactBps);
+        _requireRatioWithinImpact(s.ratioBrlaNum, s.ratioBrlaDen, brlaBuyNum, brlaBuyDen, s.maxImpactBps);
+        _requireRatioWithinImpact(s.ratioPolSellNum, s.ratioPolSellDen, polSellNum, polSellDen, s.maxImpactBps);
+        _requireRatioWithinImpact(s.ratioUsdcSellNum, s.ratioUsdcSellDen, usdcSellNum, usdcSellDen, s.maxImpactBps);
+        _requireRatioWithinImpact(s.ratioBrlaSellNum, s.ratioBrlaSellDen, brlaSellNum, brlaSellDen, s.maxImpactBps);
+
+        s.ratioPolNum = polBuyNum;
+        s.ratioPolDen = polBuyDen;
+        s.ratioUsdcNum = usdcBuyNum;
+        s.ratioUsdcDen = usdcBuyDen;
+        s.ratioBrlaNum = brlaBuyNum;
+        s.ratioBrlaDen = brlaBuyDen;
+        s.ratioPolSellNum = polSellNum;
+        s.ratioPolSellDen = polSellDen;
+        s.ratioUsdcSellNum = usdcSellNum;
+        s.ratioUsdcSellDen = usdcSellDen;
+        s.ratioBrlaSellNum = brlaSellNum;
+        s.ratioBrlaSellDen = brlaSellDen;
+        s.ratiosSetAt = uint64(block.timestamp);
+
+        emit RatioUpdated(CURRENCY_POL, polBuyNum, polBuyDen, msg.sender);
+        emit RatioUpdated(CURRENCY_USDC, usdcBuyNum, usdcBuyDen, msg.sender);
+        emit RatioUpdated(4, brlaBuyNum, brlaBuyDen, msg.sender);
+        emit RatioUpdated(2, polSellNum, polSellDen, msg.sender);
+        emit RatioUpdated(3, usdcSellNum, usdcSellDen, msg.sender);
+        emit RatioUpdated(5, brlaSellNum, brlaSellDen, msg.sender);
     }
 
     // -----------------------------------------------------------------------
@@ -311,6 +444,95 @@ contract CASSwapUSDCPOLFacet is ICASSwapUSDCPOL {
     }
 
     // -----------------------------------------------------------------------
+    // Swaps: BRLA
+    // -----------------------------------------------------------------------
+
+    function buyCASWithBRLA(uint256 brlaAmount, uint256 minCasOut, uint256 deadline)
+        external
+        nonReentrant
+        whenNotPaused
+        ensureDeadline(deadline)
+        returns (uint256 casReceived)
+    {
+        uint256 fee;
+        (casReceived, fee) = LibCASSwap.buyWithBrla(CASSwapStorage.layout(), msg.sender, brlaAmount, minCasOut, msg.sender);
+        emit CASBoughtWithBRLA(msg.sender, brlaAmount, casReceived, fee);
+    }
+
+    function sellCASForBRLA(uint256 casAmount, uint256 minBrlaOut, uint256 deadline)
+        external
+        nonReentrant
+        whenNotPaused
+        ensureDeadline(deadline)
+        returns (uint256 brlaReceived)
+    {
+        uint256 fee;
+        (brlaReceived, fee) = LibCASSwap.sellForBrla(CASSwapStorage.layout(), msg.sender, casAmount, minBrlaOut, msg.sender);
+        emit CASSoldForBRLA(msg.sender, casAmount, brlaReceived, fee);
+    }
+
+    // -----------------------------------------------------------------------
+    // Swap genérico multi-ativo (CAS como moeda-pivô)
+    // -----------------------------------------------------------------------
+
+    /**
+     * @notice Swap entre quaisquer dois ativos suportados.
+     * @dev    currencyIn/currencyOut: 0 = POL, 1 = USDC, 2 = BRLA, 3 = CAS.
+     *         Rotas com CAS usam uma perna; rotas entre ativos cotados
+     *         compõem `in -> CAS -> out` (CAS é unidade de conta, sua
+     *         reserva não se move) e aplicam o buy-ratio do ativo de
+     *         entrada + sell-ratio do de saída, com a fee cobrada uma
+     *         única vez sobre o input. msg.value deve ser igual a
+     *         `amountIn` somente quando currencyIn == POL.
+     */
+    function swapExact(
+        uint8 currencyIn,
+        uint8 currencyOut,
+        uint256 amountIn,
+        uint256 minOut,
+        uint256 deadline
+    )
+        external
+        payable
+        nonReentrant
+        whenNotPaused
+        ensureDeadline(deadline)
+        returns (uint256 amountOut)
+    {
+        if (currencyIn == CURRENCY_POL) {
+            if (msg.value != amountIn) revert MsgValueMismatch(amountIn, msg.value);
+        } else if (msg.value != 0) {
+            revert MsgValueMismatch(0, msg.value);
+        }
+
+        CASSwapStorage.Data storage s = CASSwapStorage.layout();
+        uint256 fee;
+        (amountOut, fee) = LibCASSwap.swapExact(s, msg.sender, currencyIn, currencyOut, amountIn, minOut, msg.sender);
+
+        // Eventos específicos de par preservam a compatibilidade com os
+        // indexadores das rotas CAS <-> POL/USDC já existentes.
+        if (currencyOut == CURRENCY_CAS) {
+            if (currencyIn == CURRENCY_POL) emit CASBoughtWithPOL(msg.sender, amountIn, amountOut, fee);
+            else if (currencyIn == CURRENCY_USDC) emit CASBoughtWithUSDC(msg.sender, amountIn, amountOut, fee);
+            else emit CASBoughtWithBRLA(msg.sender, amountIn, amountOut, fee);
+        } else if (currencyIn == CURRENCY_CAS) {
+            if (currencyOut == CURRENCY_POL) emit CASSoldForPOL(msg.sender, amountIn, amountOut, fee);
+            else if (currencyOut == CURRENCY_USDC) emit CASSoldForUSDC(msg.sender, amountIn, amountOut, fee);
+            else emit CASSoldForBRLA(msg.sender, amountIn, amountOut, fee);
+        }
+        emit SwapExecuted(msg.sender, currencyIn, currencyOut, amountIn, amountOut, fee);
+    }
+
+    /// @notice Cotação de um swap sem executá-lo (mesma matemática de swapExact).
+    function quoteSwap(uint8 currencyIn, uint8 currencyOut, uint256 amountIn)
+        external
+        view
+        returns (uint256 amountOut, uint256 fee)
+    {
+        return LibCASSwap.quoteSwap(CASSwapStorage.layout(), currencyIn, currencyOut, amountIn);
+    }
+
+    // -----------------------------------------------------------------------
     // Resgate genérico
     // -----------------------------------------------------------------------
 
@@ -330,6 +552,9 @@ contract CASSwapUSDCPOLFacet is ICASSwapUSDCPOL {
         } else if (currencyOut == CURRENCY_USDC) {
             (amountOut, fee) = LibCASSwap.sellForUsdc(s, msg.sender, casAmount, minOut, msg.sender);
             emit CASSoldForUSDC(msg.sender, casAmount, amountOut, fee);
+        } else if (currencyOut == CURRENCY_BRLA) {
+            (amountOut, fee) = LibCASSwap.sellForBrla(s, msg.sender, casAmount, minOut, msg.sender);
+            emit CASSoldForBRLA(msg.sender, casAmount, amountOut, fee);
         } else {
             revert InvalidCurrency(currencyOut);
         }
@@ -354,6 +579,10 @@ contract CASSwapUSDCPOLFacet is ICASSwapUSDCPOL {
             if (msg.value != 0) revert MsgValueMismatch(0, msg.value);
             (casReceived, fee) = LibCASSwap.buyWithUsdc(s, msg.sender, amountIn, minCasOut, msg.sender);
             emit CASBoughtWithUSDC(msg.sender, amountIn, casReceived, fee);
+        } else if (currencyIn == CURRENCY_BRLA) {
+            if (msg.value != 0) revert MsgValueMismatch(0, msg.value);
+            (casReceived, fee) = LibCASSwap.buyWithBrla(s, msg.sender, amountIn, minCasOut, msg.sender);
+            emit CASBoughtWithBRLA(msg.sender, amountIn, casReceived, fee);
         } else {
             revert InvalidCurrency(currencyIn);
         }
@@ -444,8 +673,55 @@ contract CASSwapUSDCPOLFacet is ICASSwapUSDCPOL {
         return (s.ratioUsdcNum, s.ratioUsdcDen);
     }
 
+    function getRatioBRLA() external view returns (uint256 numerator, uint256 denominator) {
+        CASSwapStorage.Data storage s = CASSwapStorage.layout();
+        return (s.ratioBrlaNum, s.ratioBrlaDen);
+    }
+
+    function getRatioBRLASell() external view returns (uint256 numerator, uint256 denominator) {
+        CASSwapStorage.Data storage s = CASSwapStorage.layout();
+        if (s.ratioBrlaSellNum != 0 && s.ratioBrlaSellDen != 0) {
+            return (s.ratioBrlaSellNum, s.ratioBrlaSellDen);
+        }
+        return (s.ratioBrlaNum, s.ratioBrlaDen);
+    }
+
+    /// @notice Endereço do token BRLA configurado (address(0) se não configurado).
+    function getBRLAToken() external view returns (address) {
+        return address(CASSwapStorage.layout().brlaToken);
+    }
+
+    /**
+     * @notice CAS recebidos por 1 token inteiro do ativo, no lado de compra
+     *         (currency -> CAS), já normalizado pelos decimais do ativo.
+     * @dev    POL e BRLA (18 dec): retorna o buy-ratio num/den direto.
+     *         USDC (6 dec): den multiplicado por 1e12, pois o ratio on-chain
+     *         é expresso em base units. CAS retorna (1, 1).
+     *         Para cotações direcionais completas (incluindo fee e sell
+     *         spread), use `quoteSwap`.
+     */
+    function getCasRate(uint8 currency) external view returns (uint256 numerator, uint256 denominator) {
+        if (currency == CURRENCY_CAS) return (1, 1);
+        CASSwapStorage.Data storage s = CASSwapStorage.layout();
+        (numerator, denominator) = LibCASSwap.buyRatioFor(s, currency);
+        if (currency == CURRENCY_USDC) denominator = denominator * 1e12;
+    }
+
     function getSwapFeeBps() external view override returns (uint256) {
         return CASSwapStorage.layout().swapFeeBps;
+    }
+
+    /// @notice Reservas de todos os ativos suportados (brla = 0 se não configurado).
+    function getReservesMulti()
+        external
+        view
+        returns (uint256 casBalance, uint256 polBalance, uint256 usdcBalance, uint256 brlaBalance)
+    {
+        CASSwapStorage.Data storage s = CASSwapStorage.layout();
+        casBalance = address(s.casToken) == address(0) ? 0 : s.casToken.balanceOf(address(this));
+        polBalance = address(this).balance;
+        usdcBalance = address(s.usdcToken) == address(0) ? 0 : s.usdcToken.balanceOf(address(this));
+        brlaBalance = address(s.brlaToken) == address(0) ? 0 : s.brlaToken.balanceOf(address(this));
     }
 
     function getReserves()

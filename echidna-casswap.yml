@@ -1,0 +1,13 @@
+testMode: property
+testLimit: 1000
+seqLen: 50
+timeout: 300
+balanceContract: 1000000000000000000000
+coverage: false
+cryticArgs:
+  - '--compile-force-framework'
+  - 'solc'
+  - '--solc-remaps'
+  - '@openzeppelin=node_modules/@openzeppelin'
+  - '--solc-args'
+  - '--include-path /home/carlosdelfino/workspace/Rapport/AgenticSpace/smartcontracts/node_modules --base-path /home/carlosdelfino/workspace/Rapport/AgenticSpace/smartcontracts'

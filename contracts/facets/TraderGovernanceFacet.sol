@@ -46,18 +46,25 @@ contract TraderGovernanceFacet {
         _;
     }
 
+    modifier onlyPauser() {
+        DiamondAccessControl.enforceRoleOrOwner(DiamondAccessControl.PAUSER_ROLE);
+        _;
+    }
+
     // -----------------------------------------------------------------------
     // Pause
     // -----------------------------------------------------------------------
 
-    function pauseSwap() external onlyOwner {
+    /// @dev Pausa/retomada exigem PAUSER_ROLE (ou owner) para permitir resposta
+    ///      operacional imediata via Safe, sem o delay de 48h do timelock.
+    function pauseSwap() external onlyPauser {
         CASSwapStorage.Data storage s = CASSwapStorage.layout();
         if (s.paused) revert AlreadyPaused();
         s.paused = true;
         emit SwapPaused(msg.sender);
     }
 
-    function unpauseSwap() external onlyOwner {
+    function unpauseSwap() external onlyPauser {
         CASSwapStorage.Data storage s = CASSwapStorage.layout();
         if (!s.paused) revert AlreadyUnpaused();
         s.paused = false;

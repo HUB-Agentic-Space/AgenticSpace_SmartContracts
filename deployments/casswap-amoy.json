@@ -1,0 +1,17 @@
+{
+  "network": "polygonAmoy",
+  "chainId": 80002,
+  "deployedAt": "2026-09-18T01:52:53.723Z",
+  "deployer": "0x66682BBeD9e540017967692cCdd069fE5F833888",
+  "diamond": "0xd1F0a20955c0A09325E0CB7c5ab73563e6b6c833",
+  "casToken": "0x464c9b53Fd50564e451835BA71C6D608CC0A6Eb7",
+  "usdcToken": "0xaE4405ad8DDA8Dd80FC5e2b4bA6bB6dcbA0a95dE",
+  "facets": {
+    "DiamondCutFacet": "0x10c37dFdBf59F75BE6ED78dc0Dc22cA50a1d0418",
+    "DiamondLoupeFacet": "0xa9351bD0E63097FEe2d15A08C906508138532c25",
+    "OwnershipFacet": "0x94F79788d8d7BdA18B199e2c5aC1CCdCb3D74D45",
+    "CASSwapUSDCPOLFacet": "0xAa6c79177D8435624A21B4B643b77f811Ea7cA6C",
+    "CASSwapWrapperFacet": "0xeAe92c969Fd52Cb4D894d17A7DDD432fDc4FbDBB",
+    "TraderGovernanceFacet": "0xeE4bBf6f4aB922De1040A9071E26c5015E2f9f81"
+  }
+}

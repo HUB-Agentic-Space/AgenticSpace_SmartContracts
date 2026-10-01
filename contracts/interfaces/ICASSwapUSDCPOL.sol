@@ -7,7 +7,11 @@ pragma solidity 0.8.28;
  *      Diamond do Agentic Space. Cobre swaps, resgate genérico, definição de
  *      ratio pelo backend e suporte de preço via reserva. Rede: Polygon PoS.
  *
- *      Currency: 0 = POL (nativo), 1 = USDC (ERC-20 nativo Polygon).
+ *      Currency: 0 = POL (nativo), 1 = USDC (ERC-20 nativo Polygon),
+ *      2 = BRLA (ERC-20, 18 dec), 3 = CAS (apenas no swap genérico).
+ *
+ *      RatioUpdated.pair: 0 = POL buy, 1 = USDC buy, 2 = POL sell,
+ *      3 = USDC sell, 4 = BRLA buy, 5 = BRLA sell.
  */
 interface ICASSwapUSDCPOL {
     // -----------------------------------------------------------------------
@@ -18,11 +22,15 @@ interface ICASSwapUSDCPOL {
     event RatioUpdated(uint8 indexed pair, uint256 numerator, uint256 denominator, address indexed updater);
     event SwapFeeUpdated(uint256 oldFeeBps, uint256 newFeeBps);
     event MaxImpactBpsUpdated(uint256 oldMaxImpactBps, uint256 newMaxImpactBps);
+    event BRLATokenUpdated(address indexed brlaToken, address indexed updater);
 
     event CASBoughtWithPOL(address indexed buyer, uint256 polIn, uint256 casOut, uint256 fee);
     event CASSoldForPOL(address indexed seller, uint256 casIn, uint256 polOut, uint256 fee);
     event CASBoughtWithUSDC(address indexed buyer, uint256 usdcIn, uint256 casOut, uint256 fee);
     event CASSoldForUSDC(address indexed seller, uint256 casIn, uint256 usdcOut, uint256 fee);
+    event CASBoughtWithBRLA(address indexed buyer, uint256 brlaIn, uint256 casOut, uint256 fee);
+    event CASSoldForBRLA(address indexed seller, uint256 casIn, uint256 brlaOut, uint256 fee);
+    event SwapExecuted(address indexed trader, uint8 currencyIn, uint8 currencyOut, uint256 amountIn, uint256 amountOut, uint256 fee);
 
     event SupportSwapExecuted(uint8 indexed reserveCurrency, uint256 amount, address indexed to);
 
@@ -50,6 +58,23 @@ interface ICASSwapUSDCPOL {
         uint256 usdcSellNum,
         uint256 usdcSellDen
     ) external;
+    function setAllSwapRatiosV2(
+        uint256 polBuyNum,
+        uint256 polBuyDen,
+        uint256 usdcBuyNum,
+        uint256 usdcBuyDen,
+        uint256 brlaBuyNum,
+        uint256 brlaBuyDen,
+        uint256 polSellNum,
+        uint256 polSellDen,
+        uint256 usdcSellNum,
+        uint256 usdcSellDen,
+        uint256 brlaSellNum,
+        uint256 brlaSellDen
+    ) external;
+    function setBRLAToken(address brlaToken) external;
+    function setSwapRatioBRLA(uint256 numerator, uint256 denominator) external;
+    function setSwapRatioBRLASell(uint256 numerator, uint256 denominator) external;
     function setSwapFeeBps(uint256 newFeeBps) external;
     function setMaxImpactBps(uint256 newMaxImpactBps) external;
 
@@ -61,6 +86,10 @@ interface ICASSwapUSDCPOL {
     function sellCASForPOL(uint256 casAmount, uint256 minPolOut, uint256 deadline) external returns (uint256 polReceived);
     function buyCASWithUSDC(uint256 usdcAmount, uint256 minCasOut, uint256 deadline) external returns (uint256 casReceived);
     function sellCASForUSDC(uint256 casAmount, uint256 minUsdcOut, uint256 deadline) external returns (uint256 usdcReceived);
+    function buyCASWithBRLA(uint256 brlaAmount, uint256 minCasOut, uint256 deadline) external returns (uint256 casReceived);
+    function sellCASForBRLA(uint256 casAmount, uint256 minBrlaOut, uint256 deadline) external returns (uint256 brlaReceived);
+    function swapExact(uint8 currencyIn, uint8 currencyOut, uint256 amountIn, uint256 minOut, uint256 deadline) external payable returns (uint256 amountOut);
+    function quoteSwap(uint8 currencyIn, uint8 currencyOut, uint256 amountIn) external view returns (uint256 amountOut, uint256 fee);
 
     function redeemCAS(uint256 casAmount, uint8 currencyOut, uint256 minOut, uint256 deadline) external returns (uint256 amountOut);
     function redeemForCAS(uint8 currencyIn, uint256 amountIn, uint256 minCasOut, uint256 deadline) external payable returns (uint256 casReceived);
@@ -79,8 +108,13 @@ interface ICASSwapUSDCPOL {
     function getRatioUSDC() external view returns (uint256 numerator, uint256 denominator);
     function getRatioSell() external view returns (uint256 numerator, uint256 denominator);
     function getRatioUSDCSell() external view returns (uint256 numerator, uint256 denominator);
+    function getRatioBRLA() external view returns (uint256 numerator, uint256 denominator);
+    function getRatioBRLASell() external view returns (uint256 numerator, uint256 denominator);
+    function getBRLAToken() external view returns (address);
+    function getCasRate(uint8 currency) external view returns (uint256 numerator, uint256 denominator);
     function getSwapFeeBps() external view returns (uint256);
     function getReserves() external view returns (uint256 casBalance, uint256 usdcBalance, uint256 polBalance);
+    function getReservesMulti() external view returns (uint256 casBalance, uint256 polBalance, uint256 usdcBalance, uint256 brlaBalance);
     function isSwapPaused() external view returns (bool);
     function RATIO_SETTER_ROLE() external pure returns (bytes32);
 }

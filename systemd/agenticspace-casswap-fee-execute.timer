@@ -1,0 +1,12 @@
+[Unit]
+Description=Run CASSwap swapFeeBps=50 execution after 48-hour timelock
+
+[Timer]
+OnCalendar=2026-09-26 00:12:00 UTC
+OnUnitActiveSec=5min
+AccuracySec=15s
+Persistent=true
+Unit=agenticspace-casswap-fee-execute.service
+
+[Install]
+WantedBy=timers.target

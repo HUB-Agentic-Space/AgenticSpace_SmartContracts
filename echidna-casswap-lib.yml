@@ -1,0 +1,6 @@
+testMode: property
+testLimit: 1000
+seqLen: 50
+timeout: 300
+balanceContract: 0
+coverage: false

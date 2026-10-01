@@ -637,6 +637,7 @@ Documentação detalhada em [`docs/`](./docs/):
 - [`roadmap-dao.md`](docs/roadmap-dao.md) — RoadMapDAO
 - [`agent-dao.md`](docs/agent-dao.md) — AgentDAO
 - [`contract-registry.md`](docs/contract-registry.md) — ContractRegistry
+- [`cas-swap.md`](docs/cas-swap.md) — CASSwap multi-ativo do Diamond (CAS ↔ POL/USDC/BRLA e cruzados, spread compra/venda, publisher de ratios)
 - [`audit-guide.md`](docs/audit-guide.md) — Guia de auditoria
 - [`keys-setup.md`](docs/keys-setup.md) — Como obter chaves privadas, API Key e endereço do deployer
 - [`faucet.md`](docs/faucet.md) — Faucet avulso de POL na Polygon

@@ -56,12 +56,14 @@
     "pause:casswap:polygon": "hardhat run scripts/casswap/05_pause_casswap.ts --network polygon",
     "pause:cas:polygon": "hardhat run scripts/casswap/17_pause_cas_token.ts --network polygon",
     "snapshot:liquidity:polygon": "npx hardhat run scripts/casswap/13_snapshot_liquidity.ts --network polygon",
+    "casswap:check:polygon": "npx hardhat run scripts/utils/check_casswap_migration_state.ts --network polygon",
+    "casswap:migrate:polygon": "npx hardhat run scripts/utils/migrate_caswap_via_ratio_trick.ts --network polygon",
+    "casswap:restore:polygon": "npx hardhat run scripts/utils/restore_and_pause_casswap.ts --network polygon",
     "lock:liquidity:polygon": "npx hardhat run scripts/casswap/14_transfer_lp_to_lock.ts --network polygon",
     "scan:dex:polygon": "npx hardhat run scripts/casswap/15_scan_dex_polygon.ts --network polygon",
     "unpause:casswap:polygon": "PAUSE_ACTION=unpause hardhat run scripts/casswap/05_pause_casswap.ts --network polygon",
     "unpause:cas:polygon": "PAUSE_ACTION=unpause hardhat run scripts/casswap/17_pause_cas_token.ts --network polygon",
     "distribute:cas:polygon": "hardhat run scripts/casswap/06_redistribute_cas.ts --network polygon",
-    "restore:ratio:polygon": "hardhat run scripts/casswap/07_check_and_restore_ratio.ts --network polygon",
     "sync:cas:db": "hardhat run scripts/casswap/08_sync_cas_db.ts --network polygon",
     "cas:db": "tsx scripts/casswap/09_cas_db_cli.ts",
     "cas:db:label": "tsx scripts/casswap/09_cas_db_cli.ts label",
@@ -125,9 +127,7 @@
     "v3:monitor:polygon": "hardhat run scripts/deploy/06_monitor_v3_position.ts --network polygon",
     "v3:rebalance:polygon": "hardhat run scripts/deploy/07_rebalance_v3_position.ts --network polygon",
     "diamond:deposit-pol:polygon": "hardhat run scripts/casswap/17_deposit_pol_to_diamond.ts --network polygon",
-    "diamond:set-ratio:polygon": "hardhat run scripts/casswap/19_set_diamond_ratio_target.ts --network polygon",
-    "diamond:ratio:market:polygon": "hardhat run scripts/casswap/22_set_diamond_ratio_from_market.ts --network polygon",
-    "diamond:ratio:market:dry-run:polygon": "DRY_RUN=true hardhat run scripts/casswap/22_set_diamond_ratio_from_market.ts --network polygon",
+    "diamond:calibrate-usdc:polygon": "DRY_RUN=true hardhat run scripts/calibrate_casswap_usdc_pol.ts --network polygon",
     "dex:scan": "tsx scripts/casswap/21_balance_dex_prices.ts --scan",
     "dex:balance:execute": "tsx scripts/casswap/21_balance_dex_prices.ts --execute",
     "dex:allbuy": "tsx scripts/casswap/21_balance_dex_prices.ts --allbuy",
@@ -135,6 +135,9 @@
     "dex:route": "tsx scripts/casswap/21_balance_dex_prices.ts --route",
     "dex:list-routes": "tsx scripts/casswap/21_balance_dex_prices.ts --list-routes",
     "dex:analysis": "tsx scripts/casswap/21_balance_dex_prices.ts --analysis"
+    ,"liquidity:sushi:plan": "node scripts/casswap/25_consolidate_liquidity_sushi_cli.cjs"
+    ,"liquidity:sushi:calc": "node scripts/casswap/25_consolidate_liquidity_sushi_cli.cjs --calc"
+    ,"liquidity:sushi:execute": "node scripts/casswap/25_consolidate_liquidity_sushi_cli.cjs --execute"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",

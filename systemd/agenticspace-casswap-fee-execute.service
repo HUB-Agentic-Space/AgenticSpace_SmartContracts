@@ -1,0 +1,14 @@
+[Unit]
+Description=Execute scheduled CASSwap swapFeeBps=50 after timelock
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/carlosdelfino/workspace/Rapport/AgenticSpace/smartcontracts
+ExecStart=/home/carlosdelfino/.nvm/versions/node/v22.22.3/bin/npx hardhat run scripts/deploy/39_execute_casswap_fee.ts --network polygon
+Environment=NODE_ENV=production
+Restart=no
+
+[Install]
+WantedBy=default.target

@@ -37,6 +37,19 @@ const config: HardhatUserConfig = {
       },
     ],
     overrides: {
+      // Facet CASSwap com oráculo on-chain passou de 24KB com runs=200;
+      // runs=1 mantém o bytecode abaixo de EIP-170 sem mudar a ABI.
+      "contracts/facets/CASSwapUSDCPOLFacet.sol": {
+        version: "0.8.28",
+        settings: {
+          viaIR: true,
+          optimizer: {
+            enabled: true,
+            runs: 1,
+          },
+          evmVersion: "cancun",
+        },
+      },
       "contracts/certificate/RapportCertificateUpgradeable.sol": {
         version: "0.8.28",
         settings: {
@@ -77,7 +90,19 @@ const config: HardhatUserConfig = {
   },
   networks: {
     hardhat: {
-      chainId: 31337,
+      chainId: process.env.HARDHAT_FORK_URL ? 137 : 31337,
+      forking: process.env.HARDHAT_FORK_URL
+        ? { url: process.env.HARDHAT_FORK_URL }
+        : undefined,
+      chains: {
+        137: {
+          hardforkHistory: {
+            shanghai: 0,
+            cancun: 0,
+            prague: 0,
+          },
+        },
+      },
     },
     // Polygon PoS — sidechain independente (separada da Ethereum)
     // POL e a moeda nativa para gas. Nao confundir com POL ERC-20 na Ethereum L1.
