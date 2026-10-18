@@ -27,7 +27,8 @@ library GasPromotionStorage {
         AGENT_REGISTRATION,
         USER_DEACTIVATION,
         AGENT_DEACTIVATION,
-        MERKLE_ROOT_UPDATE
+        MERKLE_ROOT_UPDATE,
+        VOUCHER_CLAIM
     }
 
     /// @notice Promotion configuration for a specific operation.
