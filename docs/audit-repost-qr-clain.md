@@ -1,0 +1,1 @@
+Auditoria manual realizada com sucesso e smartcontracts a provados no dia 01/11/2026 as 20:30

@@ -1,0 +1,14 @@
+[Unit]
+Description=Execute scheduled claim facets Diamond cut after 48h timelock
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/carlosdelfino/workspace/Rapport/AgenticSpace/smartcontracts
+ExecStart=/home/carlosdelfino/.nvm/versions/node/v22.23.4/bin/npx hardhat run scripts/deploy/54_execute_claim_facets_cut.ts --network polygon
+Environment=NODE_ENV=production
+Restart=no
+
+[Install]
+WantedBy=default.target

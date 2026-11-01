@@ -1,0 +1,12 @@
+[Unit]
+Description=Run claim facets Diamond cut execution after 48-hour timelock
+
+[Timer]
+OnCalendar=2026-11-03 23:50:00 UTC
+OnUnitActiveSec=15min
+AccuracySec=30s
+Persistent=true
+Unit=agenticspace-claim-facets-execute.service
+
+[Install]
+WantedBy=timers.target
