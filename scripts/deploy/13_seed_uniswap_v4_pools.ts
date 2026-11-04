@@ -70,6 +70,7 @@ const GAS_EST = {
   erc20Approve: 60_000n,
   permit2Approve: 80_000n,
   modifyLiquidities: 900_000n,
+  erc20Transfer: 60_000n,
 };
 
 // ── ABIs mínimas ─────────────────────────────────────────────────────
@@ -83,6 +84,7 @@ const ERC20_ABI = [
 
 const CAS_ABI = [
   "function mint(address to, uint256 amount)",
+  "function transfer(address to, uint256 amount) returns (bool)",
   "function totalSupply() view returns (uint256)",
   "function maxSupply() view returns (uint256)",
   "function hasRole(bytes32 role, address account) view returns (bool)",
@@ -387,6 +389,9 @@ async function main(): Promise<void> {
 
   // ── Tabela de provisão de fundos ───────────────────────────────────
   const casTotalNeeded = casPerPool * BigInt(pools.length);
+  // Excedente do mint vai para a tesouraria (lastro captado).
+  const treasury = (process.env.TREASURY_ADDRESS ?? "").trim();
+  const treasuryAmount = mintAmount > casTotalNeeded ? mintAmount - casTotalNeeded : 0n;
   const needs = new Map<string, { symbol: string; decimals: number; needed: bigint }>();
   needs.set(CAS, { symbol: "CAS", decimals: 18, needed: casTotalNeeded });
   for (const row of plan) {
@@ -397,7 +402,8 @@ async function main(): Promise<void> {
 
   // Estimativa de gas: mint + por pool (initialize + 2 approves ERC20 + 2 permit2 + modifyLiquidities)
   const gasPerPool = GAS_EST.initialize + 2n * GAS_EST.erc20Approve + 2n * GAS_EST.permit2Approve + GAS_EST.modifyLiquidities;
-  const gasTotal = GAS_EST.mintCas + gasPerPool * BigInt(pools.length);
+  const gasTotal = GAS_EST.mintCas + gasPerPool * BigInt(pools.length)
+    + (treasuryAmount > 0n && treasury ? GAS_EST.erc20Transfer : 0n);
   const feeData = await provider.getFeeData();
   const gasPrice = feeData.gasPrice ?? 30_000_000_000n;
   const gasCost = gasTotal * gasPrice;
@@ -423,6 +429,10 @@ async function main(): Promise<void> {
   console.log(`  ${"POL*".padEnd(6)} ${fmt(polBalance, 18).padStart(18)} ${fmt(gasCostPadded, 18).padStart(18)} ${fmt(polMissing, 18).padStart(18)}`);
   console.log(`\n  *POL = gas estimado: ${gasTotal} gas × ${fmtGwei(gasPrice)} = ${fmt(gasCost, 18)} (+20% = ${fmt(gasCostPadded, 18)})`);
   console.log(`  CAS "Necessário" cobre os 5 pools; o mint de ${fmt(mintAmount, 18)} CAS está previsto e já foi descontado do "Faltante".`);
+  if (treasuryAmount > 0n) {
+    const dest = treasury || "(TREASURY_ADDRESS não configurado — excedente ficará no deployer)";
+    console.log(`  Tesouraria (lastro): ${fmt(treasuryAmount, 18)} CAS → ${dest}`);
+  }
 
   if (deficits.length > 0 || polMissing > 0n) {
     console.log(`\n${SUB}\n  O QUE ADQUIRIR ANTES DE EXECUTAR\n${SUB}`);
@@ -555,6 +565,21 @@ async function main(): Promise<void> {
       () => posManager.modifyLiquidities(unlockData, deadline),
     );
     log("INFO", `posição mintada`, { pool: d.name, tokenId: nextId.toString(), liquidity: row.liquidity.toString() });
+  }
+
+  // Passo 5 — excedente do mint para a tesouraria (pareado com o lastro)
+  if (treasuryAmount > 0n) {
+    if (treasury) {
+      console.log(`\n${SUB}\n  Tesouraria\n${SUB}`);
+      await send(
+        `CAS.transfer(tesouraria, ${fmt(treasuryAmount, 18)})`,
+        () => cas.transfer(treasury, treasuryAmount),
+      );
+    } else {
+      log("WARN", "TREASURY_ADDRESS não configurado — excedente permanece no deployer", {
+        excedente: fmt(treasuryAmount, 18),
+      });
+    }
   }
 
   console.log(`\n${SEP}`);

@@ -36,6 +36,9 @@ Issue relacionada: `HUB-Agentic-Space/AgenticSpace_SmartContracts#2`.
   | CAS/BRLA | CAS | BRLA `0xE6A5…DDFb` |
 - **500.000 CAS por pool** (2.500.000 CAS nos pools; mint de 3.000.000 via
   `CAS_V4_MINT_AMOUNT`, deployer detém `MINTER_ROLE`; `MAX_SUPPLY=10M`).
+- **Tesouraria:** o excedente do mint (`3M − 2,5M` = 500.000 CAS) é
+  transferido para `TREASURY_ADDRESS` (`0xb72E…B837`) ao final da execução,
+  mantido pareado com o lastro captado.
 - **Preço de referência:** por padrão o script lê o spot do par SushiSwap
   `0x265D…C3964` (reservas = preço real) — seed a preço de mercado evita
   arbitragem imediata e deixa o mercado convergir. `CAS_WPOL_PRICE=<número>`
@@ -141,5 +144,6 @@ CAS/WETH ≈ 0,001529 · CAS/BRLA ≈ 0,001578.
 | 2026-11-04 | 0.1.0 | Documentação inicial; reprecificação do Diamond executada |
 | 2026-11-04 | 0.2.0 | Preço via `CAS_WPOL_PRICE` (0,00013); script reporta preço implícito CAS/WPOL por pool |
 | 2026-11-04 | 0.3.0 | `CAS_WPOL_PRICE=auto` deriva referência do spot SushiSwap; análise DEX documentada; mint 3M |
+| 2026-11-04 | 0.4.0 | Excedente do mint (500k CAS) transferido à tesouraria `TREASURY_ADDRESS` (lastro) |
 
 ![footer](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=100&section=footer&animation=twinkling)
