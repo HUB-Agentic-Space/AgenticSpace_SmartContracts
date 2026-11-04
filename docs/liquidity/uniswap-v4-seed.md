@@ -16,7 +16,8 @@ tags:
 # Seed de Liquidez Uniswap V4 — Pools CAS (Polygon)
 
 Documento operacional da criação de pools CAS no Uniswap V4 (Polygon mainnet,
-chainId 137) ao preço de referência **1 CAS = 0,0003 WPOL**, e da reprecificação
+chainId 137) ao preço de referência configurável via `CAS_WPOL_PRICE`
+(`.env`, atualmente **1 CAS = 0,00013 WPOL**), e da reprecificação
 do CASSwap novo (facet multi-token no Diamond) para evitar drenagem por
 arbitragem.
 
@@ -82,6 +83,11 @@ Sequência (executada em 2026-11-04):
   saldo × necessário × faltante por moeda (CAS, WPOL, USDC, USDT, WETH, BRLA)
   e **POL de gas estimado** (+20%). O faltante de CAS já desconta o mint
   planejado.
+- Por pool, imprime o **preço implícito de CAS em WPOL** derivado dos
+  montantes efetivamente depositados (contrapartida convertida a WPOL via
+  Chainlink ÷ CAS depositado), ao lado do preço de referência
+  `CAS_WPOL_PRICE`. Divergências de ~±10% são esperadas: o depósito cobre
+  uma faixa concentrada ±10%, não o preço spot exato.
 - `DRY_RUN=false`: mint → `approve` ERC20→Permit2 → `Permit2.approve`
   → por pool: `PoolManager.initialize` (se inexistente) +
   `PositionManager.modifyLiquidities` com `MINT_POSITION` + `SETTLE_PAIR`.
@@ -91,24 +97,29 @@ Variáveis `.env` novas: `UNIV4_POOL_MANAGER`, `UNIV4_POSITION_MANAGER`,
 `UNIV4_RANGE_PCT`, `BRLA_ADDRESS`, `CAS_WPOL_PRICE`, `CAS_V4_AMOUNT_PER_POOL`,
 `CAS_V4_MINT_AMOUNT`.
 
-## Provisão de fundos (dry-run de 2026-11-04)
+## Provisão de fundos (dry-run de 2026-11-04, `CAS_WPOL_PRICE=0.00013`)
 
 Valores aproximados — recalculados a cada execução via oráculos:
 
 | Moeda | Necessário aprox. |
 |---|---|
 | CAS | 2.500.000 (mint cobre) |
-| USDC | ~13,3 |
-| USDT | ~15,7 |
-| WPOL | ~136 |
-| WETH | ~0,0069 |
-| BRLA | ~87 |
-| POL (gas) | ~2,8 (estimado a ~289 gwei) |
+| USDC | ~5,9 |
+| USDT | ~7,0 |
+| WPOL | ~60 |
+| WETH | ~0,0030 |
+| BRLA | ~39 (saldo 600 já cobre) |
+| POL (gas) | ~2,4 (estimado a ~244 gwei) |
+
+Preços implícitos reportados pelo dry-run (500k CAS por pool, faixa ±10%):
+CAS/USDC ≈ 0,0001196 WPOL · CAS/USDT ≈ 0,0001417 · CAS/WPOL ≈ 0,0001175 ·
+CAS/WETH ≈ 0,0001455 · CAS/BRLA ≈ 0,0001433.
 
 ## Changelog
 
 | Data | Versão | Descrição |
 |---|---|---|
 | 2026-11-04 | 0.1.0 | Documentação inicial; reprecificação do Diamond executada |
+| 2026-11-04 | 0.2.0 | Preço via `CAS_WPOL_PRICE` (0,00013); script reporta preço implícito CAS/WPOL por pool |
 
 ![footer](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=100&section=footer&animation=twinkling)

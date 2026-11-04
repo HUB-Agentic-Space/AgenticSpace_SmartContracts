@@ -201,6 +201,16 @@ async function main(): Promise<void> {
   const rangePct = BigInt(process.env.UNIV4_RANGE_PCT ?? "10"); // ±%
   const slippageBps = 200n; // +2% de margem nos amountMax
 
+  // Preço de referência CAS em WPOL (fração decimal exata, ex.: 0.00013).
+  const casWpolPriceStr = process.env.CAS_WPOL_PRICE ?? "0.0003";
+  const [ip, fp = ""] = casWpolPriceStr.split(".");
+  const priceNum = BigInt((ip + fp).replace(/^0+/, "") || "0");
+  const priceDen = 10n ** BigInt(fp.length); // CAS = priceNum/priceDen WPOL
+  if (priceNum === 0n) {
+    log("ERROR", "CAS_WPOL_PRICE inválido", { casWpolPriceStr });
+    process.exit(1);
+  }
+
   const [deployer] = await ethers.getSigners();
   const provider = deployer.provider!;
   const network = await provider.getNetwork();
@@ -224,10 +234,10 @@ async function main(): Promise<void> {
     feedPrice(provider, FEED_ETH_USD),
     feedPrice(provider, FEED_BRL_USD),
   ]);
-  const casUsdE8 = (polUsdE8 * 3n) / 10000n; // CAS = 0,0003 WPOL
+  const casUsdE8 = (polUsdE8 * priceNum) / priceDen; // CAS = priceNum/priceDen WPOL
   console.log(`\n${SUB}\n  Preços (Chainlink)\n${SUB}`);
   console.log(`  POL/USD: $${Number(polUsdE8) / 1e8} | ETH/USD: $${Number(ethUsdE8) / 1e8} | BRL/USD: $${Number(brlUsdE8) / 1e8}`);
-  console.log(`  CAS/USD derivado: $${Number(casUsdE8) / 1e8} | CAS = 0,0003 WPOL`);
+  console.log(`  CAS/USD derivado: $${Number(casUsdE8) / 1e8} | CAS = ${casWpolPriceStr} WPOL`);
 
   // ── Definição dos 5 pools (currency ordenada por endereço) ─────────
   // price (currency1 por currency0, base units) expresso como num/den.
@@ -249,10 +259,11 @@ async function main(): Promise<void> {
       casIsCurrency1: false, casAmount: casPerPool,
     },
     {
-      // WPOL 0x0d50 < CAS → c0=WPOL, c1=CAS; price = CAS por WPOL = 10000/3
+      // WPOL 0x0d50 < CAS → c0=WPOL, c1=CAS
+      // price = CAS-wei por WPOL-wei = 1/casWpol = priceDen/priceNum
       name: "CAS/WPOL",
       counterparty: WPOL, counterSymbol: "WPOL", counterDecimals: 18,
-      num: 10000n, den: 3n,
+      num: priceDen, den: priceNum,
       casIsCurrency1: true, casAmount: casPerPool,
     },
     {
@@ -287,8 +298,23 @@ async function main(): Promise<void> {
     amount0Max: bigint;
     amount1Max: bigint;
     counterNeeded: bigint;   // quantidade da contrapartida (base units)
+    counterInWpolE18: bigint; // contrapartida convertida a WPOL (1e18)
+    impliedWpolE18: bigint;   // preço implícito: WPOL por CAS (1e18)
   }
   const plan: PlanRow[] = [];
+
+  // Converte a contrapartida (base units) para equivalente WPOL (1e18).
+  const toWpol = (def: PoolDef, amount: bigint): bigint => {
+    switch (def.counterSymbol) {
+      case "WPOL": return amount;
+      case "USDC":
+      case "USDT": // $1: usd = amt×1e-6 → wpol wei = amt×1e20/polUsdE8
+        return (amount * 10n ** 20n) / polUsdE8;
+      case "WETH": return (amount * ethUsdE8) / polUsdE8;
+      case "BRLA": return (amount * brlUsdE8) / polUsdE8;
+      default: return 0n;
+    }
+  };
 
   console.log(`\n${SUB}\n  Parâmetros dos pools\n${SUB}`);
   for (const def of pools) {
@@ -306,6 +332,11 @@ async function main(): Promise<void> {
     const amount0Max = (amount0 * (10000n + slippageBps)) / 10000n;
     const amount1Max = (amount1 * (10000n + slippageBps)) / 10000n;
     const counterNeeded = def.casIsCurrency1 ? amount0Max : amount1Max;
+    const counterExact = def.casIsCurrency1 ? amount0 : amount1;
+    const casDeposited = def.casIsCurrency1 ? amount1 : amount0;
+    const counterInWpolE18 = toWpol(def, counterExact);
+    // Preço implícito do CAS em WPOL: contrapartida(WPOL) / CAS depositado (18dec ambos).
+    const impliedWpolE18 = casDeposited === 0n ? 0n : (counterInWpolE18 * 10n ** 18n) / casDeposited;
 
     plan.push({
       def,
@@ -313,13 +344,14 @@ async function main(): Promise<void> {
       sqrtPriceX96: sqrtP,
       tickLower, tickUpper,
       liquidity, amount0, amount1, amount0Max, amount1Max,
-      counterNeeded,
+      counterNeeded, counterInWpolE18, impliedWpolE18,
     });
 
     console.log(`  ${def.name}: tick ${tickNow} [${tickLower}, ${tickUpper}]`);
     console.log(`    amount0 (${def.casIsCurrency1 ? def.counterSymbol : "CAS"}): ${fmt(amount0, def.casIsCurrency1 ? def.counterDecimals : 18)}`);
     console.log(`    amount1 (${def.casIsCurrency1 ? "CAS" : def.counterSymbol}): ${fmt(amount1, def.casIsCurrency1 ? 18 : def.counterDecimals)}`);
     console.log(`    contrapartida c/ margem: ${fmt(counterNeeded, def.counterDecimals)} ${def.counterSymbol}`);
+    console.log(`    preço implícito: 1 CAS = ${fmt(impliedWpolE18, 18)} WPOL (alvo ${casWpolPriceStr})`);
   }
 
   // ── Tabela de provisão de fundos ───────────────────────────────────
