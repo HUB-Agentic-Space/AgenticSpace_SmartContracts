@@ -16,10 +16,10 @@ tags:
 # Seed de Liquidez Uniswap V4 — Pools CAS (Polygon)
 
 Documento operacional da criação de pools CAS no Uniswap V4 (Polygon mainnet,
-chainId 137) ao preço de referência configurável via `CAS_WPOL_PRICE`
-(`.env`, atualmente **1 CAS = 0,00013 WPOL**), e da reprecificação
-do CASSwap novo (facet multi-token no Diamond) para evitar drenagem por
-arbitragem.
+chainId 137) ao **preço de mercado** derivado on-chain do par SushiSwap
+WPOL/CAS (modo `CAS_WPOL_PRICE=auto`), de forma a aumentar liquidez sem
+impactar o preço vigente, e da reprecificação do CASSwap novo (facet
+multi-token no Diamond) para evitar drenagem por arbitragem.
 
 Issue relacionada: `HUB-Agentic-Space/AgenticSpace_SmartContracts#2`.
 
@@ -34,10 +34,28 @@ Issue relacionada: `HUB-Agentic-Space/AgenticSpace_SmartContracts#2`.
   | CAS/WPOL | WPOL `0x0d50…1270` | CAS |
   | CAS/WETH | CAS | WETH `0x7ceB…f619` |
   | CAS/BRLA | CAS | BRLA `0xE6A5…DDFb` |
-- **500.000 CAS por pool** (2.500.000 CAS total) — mint via `CAS_V4_MINT_AMOUNT`
-  no próprio script (deployer detém `MINTER_ROLE`; `MAX_SUPPLY=10M`).
+- **500.000 CAS por pool** (2.500.000 CAS nos pools; mint de 3.000.000 via
+  `CAS_V4_MINT_AMOUNT`, deployer detém `MINTER_ROLE`; `MAX_SUPPLY=10M`).
+- **Preço de referência:** por padrão o script lê o spot do par SushiSwap
+  `0x265D…C3964` (reservas = preço real) — seed a preço de mercado evita
+  arbitragem imediata e deixa o mercado convergir. `CAS_WPOL_PRICE=<número>`
+  força um preço fixo (com alerta se divergir >25% do spot).
 - Contrapartida: calculada on-chain no momento (Chainlink POL/USD, ETH/USD,
-  BRL/USD) para equivaler a ~150 WPOL por pool.
+  BRL/USD) para equivaler ao preço de referência por pool.
+
+## Análise de preço nas DEXs (2026-11-04)
+
+Única liquidez CAS existente: dois pools WPOL/CAS.
+
+| Fonte | Reservas | Spot CAS |
+|---|---|---|
+| SushiSwap `0x265D…C3964` | 29,01 WPOL / 20.248 CAS | **1 CAS ≈ 0,00143 WPOL** (~$0,000137) |
+| UniV3 `0x2a37…50Dc` (0,3%) | 0,68 WPOL / 19.888 CAS | tick ≈ 0,00415 WPOL — **não confiável** (lado WPOL quase zerado; liquidez concentrada fora da faixa) |
+
+O spot da SushiSwap (produto constante, reservas = preço) é a referência de
+mercado usada pelo script. Semear abaixo do spot faria arbitradores comprarem
+CAS barato no V4 e venderem na Sushi, derrubando o preço — por isso o modo
+`auto` é o padrão.
 
 ## Contratos V4 (oficiais, Polygon)
 
@@ -97,23 +115,24 @@ Variáveis `.env` novas: `UNIV4_POOL_MANAGER`, `UNIV4_POSITION_MANAGER`,
 `UNIV4_RANGE_PCT`, `BRLA_ADDRESS`, `CAS_WPOL_PRICE`, `CAS_V4_AMOUNT_PER_POOL`,
 `CAS_V4_MINT_AMOUNT`.
 
-## Provisão de fundos (dry-run de 2026-11-04, `CAS_WPOL_PRICE=0.00013`)
+## Provisão de fundos (dry-run de 2026-11-04, `CAS_WPOL_PRICE=auto`)
 
-Valores aproximados — recalculados a cada execução via oráculos:
+Preço de mercado capturado: 1 CAS ≈ 0,00143 WPOL. Valores aproximados —
+recalculados a cada execução via oráculos e spot Sushi:
 
 | Moeda | Necessário aprox. |
 |---|---|
-| CAS | 2.500.000 (mint cobre) |
-| USDC | ~5,9 |
-| USDT | ~7,0 |
-| WPOL | ~60 |
-| WETH | ~0,0030 |
-| BRLA | ~39 (saldo 600 já cobre) |
-| POL (gas) | ~2,4 (estimado a ~244 gwei) |
+| CAS | 2.500.000 (mint de 3M cobre) |
+| USDC | ~64,3 |
+| USDT | ~76,2 |
+| WPOL | ~660 |
+| WETH | ~0,031 |
+| BRLA | ~420 (saldo 600 cobre) |
+| POL (gas) | ~2,7 (estimado a ~278 gwei) |
 
 Preços implícitos reportados pelo dry-run (500k CAS por pool, faixa ±10%):
-CAS/USDC ≈ 0,0001196 WPOL · CAS/USDT ≈ 0,0001417 · CAS/WPOL ≈ 0,0001175 ·
-CAS/WETH ≈ 0,0001455 · CAS/BRLA ≈ 0,0001433.
+CAS/USDC ≈ 0,001317 WPOL · CAS/USDT ≈ 0,001560 · CAS/WPOL ≈ 0,001293 ·
+CAS/WETH ≈ 0,001529 · CAS/BRLA ≈ 0,001578.
 
 ## Changelog
 
@@ -121,5 +140,6 @@ CAS/WETH ≈ 0,0001455 · CAS/BRLA ≈ 0,0001433.
 |---|---|---|
 | 2026-11-04 | 0.1.0 | Documentação inicial; reprecificação do Diamond executada |
 | 2026-11-04 | 0.2.0 | Preço via `CAS_WPOL_PRICE` (0,00013); script reporta preço implícito CAS/WPOL por pool |
+| 2026-11-04 | 0.3.0 | `CAS_WPOL_PRICE=auto` deriva referência do spot SushiSwap; análise DEX documentada; mint 3M |
 
 ![footer](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=100&section=footer&animation=twinkling)

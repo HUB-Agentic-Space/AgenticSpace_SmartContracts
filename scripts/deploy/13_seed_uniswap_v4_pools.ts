@@ -56,6 +56,9 @@ const FEED_POL_USD = "0xAB594600376Ec9fD91F8e885dADF0CE036862dE0";
 const FEED_ETH_USD = "0xF9680D99D6C9589e2a93a78A04A279e509205945";
 const FEED_BRL_USD = "0xB90DA3ff54C3ED09115abf6FbA0Ff4645586af2c";
 
+// Par SushiSwap WPOL/CAS — referência de preço de mercado (reservas = spot real).
+const SUSHI_WPOL_CAS = "0x265D86d4D43c32037b032097e8bFB6893E1C3964";
+
 // Uniswap V4 Actions (v4-periphery libraries/Actions.sol)
 const ACTION_MINT_POSITION = 0x02;
 const ACTION_SETTLE_PAIR = 0x0d;
@@ -106,6 +109,10 @@ const POSITION_MANAGER_ABI = [
 
 const CL_ABI = [
   "function latestRoundData() view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)",
+];
+
+const SUSHI_PAIR_ABI = [
+  "function getReserves() view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)",
 ];
 
 // ── Matemática V3/V4 (Q64.96) ────────────────────────────────────────
@@ -201,15 +208,9 @@ async function main(): Promise<void> {
   const rangePct = BigInt(process.env.UNIV4_RANGE_PCT ?? "10"); // ±%
   const slippageBps = 200n; // +2% de margem nos amountMax
 
-  // Preço de referência CAS em WPOL (fração decimal exata, ex.: 0.00013).
-  const casWpolPriceStr = process.env.CAS_WPOL_PRICE ?? "0.0003";
-  const [ip, fp = ""] = casWpolPriceStr.split(".");
-  const priceNum = BigInt((ip + fp).replace(/^0+/, "") || "0");
-  const priceDen = 10n ** BigInt(fp.length); // CAS = priceNum/priceDen WPOL
-  if (priceNum === 0n) {
-    log("ERROR", "CAS_WPOL_PRICE inválido", { casWpolPriceStr });
-    process.exit(1);
-  }
+  // Preço de referência CAS em WPOL. "auto"/"market"/vazio deriva do spot
+  // SushiSwap (reservas); valor numérico (ex.: 0.00143) força o preço.
+  const casWpolPriceEnv = (process.env.CAS_WPOL_PRICE ?? "auto").trim();
 
   const [deployer] = await ethers.getSigners();
   const provider = deployer.provider!;
@@ -228,16 +229,46 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // ── Feeds ──────────────────────────────────────────────────────────
+  // ── Feeds + spot de mercado (SushiSwap WPOL/CAS) ───────────────────
   const [polUsdE8, ethUsdE8, brlUsdE8] = await Promise.all([
     feedPrice(provider, FEED_POL_USD),
     feedPrice(provider, FEED_ETH_USD),
     feedPrice(provider, FEED_BRL_USD),
   ]);
+  const sushi = new ethers.Contract(SUSHI_WPOL_CAS, SUSHI_PAIR_ABI, provider);
+  const [rWpol, rCas] = await sushi.getReserves(); // token0=WPOL, token1=CAS
+  // Spot de mercado: 1 CAS = rWpol/rCas WPOL (ambos 18 dec).
+  const marketWpolE18 = (BigInt(rWpol) * 10n ** 18n) / BigInt(rCas);
+
+  let priceNum: bigint, priceDen: bigint, casWpolPriceStr: string, priceSource: string;
+  if (["auto", "market", ""].includes(casWpolPriceEnv.toLowerCase())) {
+    // Fração exata do spot: rWpol/rCas WPOL por CAS.
+    priceNum = BigInt(rWpol); priceDen = BigInt(rCas);
+    casWpolPriceStr = fmt(marketWpolE18, 18);
+    priceSource = "mercado (reservas SushiSwap)";
+  } else {
+    const [ip, fp = ""] = casWpolPriceEnv.split(".");
+    priceNum = BigInt((ip + fp).replace(/^0+/, "") || "0");
+    priceDen = 10n ** BigInt(fp.length);
+    casWpolPriceStr = casWpolPriceEnv;
+    priceSource = "fixo (CAS_WPOL_PRICE)";
+    if (priceNum === 0n) {
+      log("ERROR", "CAS_WPOL_PRICE inválido", { casWpolPriceEnv });
+      process.exit(1);
+    }
+    // Alerta se o preço fixo divergir >25% do spot de mercado.
+    const diffBps = Number(((priceNum * 10n ** 18n * BigInt(rCas)) / (priceDen * BigInt(rWpol)) - 10n ** 18n) * 10000n / 10n ** 18n);
+    if (Math.abs(diffBps) > 2500) {
+      log("WARN", "preço fixo diverge do mercado — seed abaixo do spot será arbitrado (impacta o preço)", {
+        fixoWpol: casWpolPriceStr, mercadoWpol: fmt(marketWpolE18, 18), diffBps,
+      });
+    }
+  }
   const casUsdE8 = (polUsdE8 * priceNum) / priceDen; // CAS = priceNum/priceDen WPOL
-  console.log(`\n${SUB}\n  Preços (Chainlink)\n${SUB}`);
+  console.log(`\n${SUB}\n  Preços (Chainlink + mercado)\n${SUB}`);
   console.log(`  POL/USD: $${Number(polUsdE8) / 1e8} | ETH/USD: $${Number(ethUsdE8) / 1e8} | BRL/USD: $${Number(brlUsdE8) / 1e8}`);
-  console.log(`  CAS/USD derivado: $${Number(casUsdE8) / 1e8} | CAS = ${casWpolPriceStr} WPOL`);
+  console.log(`  Mercado CAS/WPOL (Sushi ${fmt(rWpol, 18)} WPOL / ${fmt(rCas, 18)} CAS): 1 CAS = ${fmt(marketWpolE18, 18)} WPOL`);
+  console.log(`  Referência usada (${priceSource}): 1 CAS = ${casWpolPriceStr} WPOL | CAS/USD derivado: $${Number(casUsdE8) / 1e8}`);
 
   // ── Definição dos 5 pools (currency ordenada por endereço) ─────────
   // price (currency1 por currency0, base units) expresso como num/den.
@@ -527,7 +558,7 @@ async function main(): Promise<void> {
   }
 
   console.log(`\n${SEP}`);
-  console.log("  Concluído — 5 pools V4 semeadas a 1 CAS = 0,0003 WPOL");
+  console.log(`  Concluído — 5 pools V4 semeadas a 1 CAS = ${casWpolPriceStr} WPOL (${priceSource})`);
   console.log(`${SEP}\n`);
 }
 
