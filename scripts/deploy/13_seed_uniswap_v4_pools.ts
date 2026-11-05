@@ -491,6 +491,7 @@ async function main(): Promise<void> {
   const permit2 = new ethers.Contract(PERMIT2, PERMIT2_ABI, deployer);
   const abiCoder = ethers.AbiCoder.defaultAbiCoder();
 
+  const txLog: { label: string; hash: string }[] = [];
   const send = async (label: string, buildTx: () => Promise<any>): Promise<any> => {
     const tx = await buildTx();
     console.log(`  TX ${label}: ${tx.hash}`);
@@ -500,6 +501,7 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     log("INFO", `confirmada ${label}`, { hash: tx.hash, gasUsed: receipt.gasUsed.toString() });
+    txLog.push({ label, hash: tx.hash });
     return receipt;
   };
 
@@ -610,6 +612,13 @@ async function main(): Promise<void> {
 
   console.log(`\n${SEP}`);
   console.log(`  Concluído — 5 pools V4 semeadas a 1 CAS = ${casWpolPriceStr} WPOL (${priceSource})`);
+  console.log(SEP);
+  if (txLog.length > 0) {
+    console.log(`\n${SUB}\n  Transações (Polygonscan)\n${SUB}`);
+    for (const t of txLog) {
+      console.log(`  ${t.label}\n    https://polygonscan.com/tx/${t.hash}`);
+    }
+  }
   console.log(`${SEP}\n`);
 }
 
