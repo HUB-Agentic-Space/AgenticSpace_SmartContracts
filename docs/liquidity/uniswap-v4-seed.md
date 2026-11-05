@@ -104,6 +104,9 @@ Sequência (executada em 2026-11-04):
   saldo × necessário × faltante por moeda (CAS, WPOL, USDC, USDT, WETH, BRLA)
   e **POL de gas estimado** (+20%). O faltante de CAS já desconta o mint
   planejado.
+- A lista "O QUE ADQUIRIR" converte cada faltante para **equivalente BRLA**
+  (Chainlink BRL/USD) e soma um **total geral em BRLA** (+5% de margem para
+  os swaps BRLA→tokens), já que o provisionamento é feito comprando BRLA.
 - Por pool, imprime o **preço implícito de CAS em WPOL** derivado dos
   montantes efetivamente depositados (contrapartida convertida a WPOL via
   Chainlink ÷ CAS depositado), ao lado do preço de referência
@@ -145,5 +148,6 @@ CAS/WETH ≈ 0,001529 · CAS/BRLA ≈ 0,001578.
 | 2026-11-04 | 0.2.0 | Preço via `CAS_WPOL_PRICE` (0,00013); script reporta preço implícito CAS/WPOL por pool |
 | 2026-11-04 | 0.3.0 | `CAS_WPOL_PRICE=auto` deriva referência do spot SushiSwap; análise DEX documentada; mint 3M |
 | 2026-11-04 | 0.4.0 | Excedente do mint (500k CAS) transferido à tesouraria `TREASURY_ADDRESS` (lastro) |
+| 2026-11-04 | 0.5.0 | Lista de aquisição com equivalente e total geral em BRLA (+5% p/ swaps) |
 
 ![footer](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=100&section=footer&animation=twinkling)

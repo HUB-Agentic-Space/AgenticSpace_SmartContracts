@@ -349,6 +349,16 @@ async function main(): Promise<void> {
     }
   };
 
+  // Converte um faltante (base units) para equivalente BRLA (1e18) via
+  // Chainlink (POL/ETH/BRL/USD; stables = $1; POL nativo usa o feed POL/USD).
+  const deficitToBrla = (symbol: string, amount: bigint, decimals: number): bigint => {
+    if (decimals === 6) return (amount * 10n ** 20n) / brlUsdE8; // USD-pegged
+    if (symbol === "WPOL" || symbol === "POL") return (amount * polUsdE8) / brlUsdE8;
+    if (symbol === "WETH") return (amount * ethUsdE8) / brlUsdE8;
+    if (symbol === "BRLA") return amount;
+    return 0n;
+  };
+
   console.log(`\n${SUB}\n  Parâmetros dos pools\n${SUB}`);
   for (const def of pools) {
     const [c0, c1] = def.casIsCurrency1
@@ -436,10 +446,21 @@ async function main(): Promise<void> {
 
   if (deficits.length > 0 || polMissing > 0n) {
     console.log(`\n${SUB}\n  O QUE ADQUIRIR ANTES DE EXECUTAR\n${SUB}`);
+    let totalBrlaE18 = 0n;
     for (const d of deficits) {
-      console.log(`  - ${d.symbol}: ${fmt(d.amount, d.decimals)} (token ${d.addr})`);
+      const inBrla = deficitToBrla(d.symbol, d.amount, d.decimals);
+      totalBrlaE18 += inBrla;
+      console.log(`  - ${d.symbol}: ${fmt(d.amount, d.decimals)} (≈ ${fmt(inBrla, 18)} BRLA) (token ${d.addr})`);
     }
-    if (polMissing > 0n) console.log(`  - POL (gas): ${fmt(polMissing, 18)}`);
+    if (polMissing > 0n) {
+      const inBrla = deficitToBrla("POL", polMissing, 18);
+      totalBrlaE18 += inBrla;
+      console.log(`  - POL (gas): ${fmt(polMissing, 18)} (≈ ${fmt(inBrla, 18)} BRLA)`);
+    }
+    // Margem de +5% sobre o total para cobrir spread/slippage dos swaps BRLA→tokens.
+    const totalBrlaPadded = (totalBrlaE18 * 105n) / 100n;
+    console.log(`\n  TOTAL a adquirir em BRLA: ≈ ${fmt(totalBrlaE18, 18)} BRLA (+5% p/ swaps = ${fmt(totalBrlaPadded, 18)} BRLA)`);
+    console.log(`  (conversão via Chainlink BRL/USD $${Number(brlUsdE8) / 1e8}; inclui POL de gas)`);
   } else {
     console.log(`\n  Todos os saldos cobrem a execução.`);
   }
