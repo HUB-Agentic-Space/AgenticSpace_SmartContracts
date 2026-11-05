@@ -206,7 +206,10 @@ async function main(): Promise<void> {
 
   const dryRun = (process.env.DRY_RUN ?? "true").toLowerCase() !== "false";
   const casPerPool = ethers.parseEther(process.env.CAS_V4_AMOUNT_PER_POOL ?? "500000");
-  const mintAmount = ethers.parseEther(process.env.CAS_V4_MINT_AMOUNT ?? "2500000");
+  const mintEnabled = (process.env.CAS_V4_MINT_ENABLED ?? "true").toLowerCase() !== "false";
+  const mintAmount = mintEnabled
+    ? ethers.parseEther(process.env.CAS_V4_MINT_AMOUNT ?? "2500000")
+    : 0n;
   const rangePct = BigInt(process.env.UNIV4_RANGE_PCT ?? "10"); // ±%
   const slippageBps = 200n; // +2% de margem nos amountMax
 
@@ -224,7 +227,7 @@ async function main(): Promise<void> {
   console.log(`  Rede:    ${netInfo.name} (${chainId})`);
   console.log(`  Modo:    ${dryRun ? "DRY-RUN (nenhuma tx será enviada)" : "EXECUÇÃO"}`);
   console.log(`  Deployer: ${deployer.address}`);
-  console.log(`  CAS/pool: ${fmt(casPerPool, 18)} CAS | faixa ±${rangePct}%`);
+  console.log(`  CAS/pool: ${fmt(casPerPool, 18)} CAS | faixa ±${rangePct}% | mint: ${mintEnabled ? fmt(mintAmount, 18) + " CAS" : "DESABILITADO (usa saldo)"}`);
 
   if (chainId !== 137) {
     log("ERROR", "Abortando: script deve rodar na Polygon mainnet (137)", { chainId });
@@ -412,7 +415,7 @@ async function main(): Promise<void> {
 
   // Estimativa de gas: mint + por pool (initialize + 2 approves ERC20 + 2 permit2 + modifyLiquidities)
   const gasPerPool = GAS_EST.initialize + 2n * GAS_EST.erc20Approve + 2n * GAS_EST.permit2Approve + GAS_EST.modifyLiquidities;
-  const gasTotal = GAS_EST.mintCas + gasPerPool * BigInt(pools.length)
+  const gasTotal = (mintEnabled ? GAS_EST.mintCas : 0n) + gasPerPool * BigInt(pools.length)
     + (treasuryAmount > 0n && treasury ? GAS_EST.erc20Transfer : 0n);
   const feeData = await provider.getFeeData();
   const gasPrice = feeData.gasPrice ?? 30_000_000_000n;
@@ -438,7 +441,9 @@ async function main(): Promise<void> {
   const polMissing = gasCostPadded > polBalance ? gasCostPadded - polBalance : 0n;
   console.log(`  ${"POL*".padEnd(6)} ${fmt(polBalance, 18).padStart(18)} ${fmt(gasCostPadded, 18).padStart(18)} ${fmt(polMissing, 18).padStart(18)}`);
   console.log(`\n  *POL = gas estimado: ${gasTotal} gas × ${fmtGwei(gasPrice)} = ${fmt(gasCost, 18)} (+20% = ${fmt(gasCostPadded, 18)})`);
-  console.log(`  CAS "Necessário" cobre os 5 pools; o mint de ${fmt(mintAmount, 18)} CAS está previsto e já foi descontado do "Faltante".`);
+  console.log(mintEnabled
+    ? `  CAS "Necessário" cobre os 5 pools; o mint de ${fmt(mintAmount, 18)} CAS está previsto e já foi descontado do "Faltante".`
+    : `  CAS "Necessário" cobre os 5 pools a partir do saldo existente (CAS_V4_MINT_ENABLED=false).`);
   if (treasuryAmount > 0n) {
     const dest = treasury || "(TREASURY_ADDRESS não configurado — excedente ficará no deployer)";
     console.log(`  Tesouraria (lastro): ${fmt(treasuryAmount, 18)} CAS → ${dest}`);

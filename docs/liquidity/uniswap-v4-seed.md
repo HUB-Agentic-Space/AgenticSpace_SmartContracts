@@ -119,7 +119,10 @@ Sequência (executada em 2026-11-04):
 Variáveis `.env` novas: `UNIV4_POOL_MANAGER`, `UNIV4_POSITION_MANAGER`,
 `UNIV4_STATE_VIEW`, `PERMIT2_ADDRESS`, `UNIV4_FEE_TIER`, `UNIV4_TICK_SPACING`,
 `UNIV4_RANGE_PCT`, `BRLA_ADDRESS`, `CAS_WPOL_PRICE`, `CAS_V4_AMOUNT_PER_POOL`,
-`CAS_V4_MINT_AMOUNT`.
+`CAS_V4_MINT_ENABLED`, `CAS_V4_MINT_AMOUNT`, `TREASURY_ADDRESS`.
+
+`CAS_V4_MINT_ENABLED=false` pula o mint e semeia os pools apenas com o saldo
+CAS existente do deployer (a tabela passa a exibir o faltante real de CAS).
 
 ## Provisão de fundos (dry-run de 2026-11-04, `CAS_WPOL_PRICE=auto`)
 
@@ -149,5 +152,6 @@ CAS/WETH ≈ 0,001529 · CAS/BRLA ≈ 0,001578.
 | 2026-11-04 | 0.3.0 | `CAS_WPOL_PRICE=auto` deriva referência do spot SushiSwap; análise DEX documentada; mint 3M |
 | 2026-11-04 | 0.4.0 | Excedente do mint (500k CAS) transferido à tesouraria `TREASURY_ADDRESS` (lastro) |
 | 2026-11-04 | 0.5.0 | Lista de aquisição com equivalente e total geral em BRLA (+5% p/ swaps) |
+| 2026-11-04 | 0.6.0 | `CAS_V4_MINT_ENABLED=false` permite seed apenas com saldo existente |
 
 ![footer](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=100&section=footer&animation=twinkling)
