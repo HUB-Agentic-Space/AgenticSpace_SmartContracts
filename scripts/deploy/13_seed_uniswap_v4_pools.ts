@@ -206,10 +206,13 @@ async function main(): Promise<void> {
 
   const dryRun = (process.env.DRY_RUN ?? "true").toLowerCase() !== "false";
   const casPerPool = ethers.parseEther(process.env.CAS_V4_AMOUNT_PER_POOL ?? "500000");
-  const mintEnabled = (process.env.CAS_V4_MINT_ENABLED ?? "true").toLowerCase() !== "false";
-  const mintAmount = mintEnabled
+  const mintEnabledFlag = (process.env.CAS_V4_MINT_ENABLED ?? "true").toLowerCase() !== "false";
+  const mintAmount = mintEnabledFlag
     ? ethers.parseEther(process.env.CAS_V4_MINT_AMOUNT ?? "2500000")
     : 0n;
+  // Mint desabilitado por flag ou por CAS_V4_MINT_AMOUNT=0 → pools carregados
+  // apenas com os saldos (CAS + contrapartidas nas proporções do preço-alvo).
+  const mintEnabled = mintAmount > 0n;
   const rangePct = BigInt(process.env.UNIV4_RANGE_PCT ?? "10"); // ±%
   const slippageBps = 200n; // +2% de margem nos amountMax
 
@@ -443,7 +446,7 @@ async function main(): Promise<void> {
   console.log(`\n  *POL = gas estimado: ${gasTotal} gas × ${fmtGwei(gasPrice)} = ${fmt(gasCost, 18)} (+20% = ${fmt(gasCostPadded, 18)})`);
   console.log(mintEnabled
     ? `  CAS "Necessário" cobre os 5 pools; o mint de ${fmt(mintAmount, 18)} CAS está previsto e já foi descontado do "Faltante".`
-    : `  CAS "Necessário" cobre os 5 pools a partir do saldo existente (CAS_V4_MINT_ENABLED=false).`);
+    : `  CAS "Necessário" cobre os 5 pools a partir do saldo existente (mint desabilitado).`);
   if (treasuryAmount > 0n) {
     const dest = treasury || "(TREASURY_ADDRESS não configurado — excedente ficará no deployer)";
     console.log(`  Tesouraria (lastro): ${fmt(treasuryAmount, 18)} CAS → ${dest}`);
