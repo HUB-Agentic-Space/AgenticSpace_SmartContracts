@@ -73,6 +73,7 @@
     "cas:db:search": "tsx scripts/casswap/09_cas_db_cli.ts search",
     "cas:label": "tsx scripts/casswap/10_label_address.ts",
     "import:contas:csv": "hardhat run scripts/casswap/12_import_contas_csv.ts --network polygon",
+    "mint:cas:csv": "hardhat run scripts/casswap/27_mint_cas_csv.ts --network polygon",
     "listing:readiness": "hardhat run scripts/analysis/coingecko_listing_readiness.ts",
     "listing:trustwallet": "hardhat run scripts/listing/01_trustwallet_submit.ts",
     "listing:dexscreener": "hardhat run scripts/listing/02_dexscreener_check.ts",
