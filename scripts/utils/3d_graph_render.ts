@@ -35,10 +35,21 @@
 // ── CDN ───────────────────────────────────────────────────────────────
 
 /**
- * CDN script tag for 3d-force-graph (bundles Three.js).
+ * CDN script tags para o grafo 3D.
+ *
+ * - 3d-force-graph@1.80.0: engine do grafo. O bundle UMD embute three
+ *   internamente (>=0.179) sem expô-lo como global — e não existe build
+ *   UMD de three compatível para carregar separadamente.
+ * - Dynamic import de three@0.179.x (ESM): expõe `window.THREE` para o
+ *   nodeThreeObject customizado (sprites/icosaedro) e resolve a promise
+ *   `window.__threeReady`, que o init aguarda antes de instanciar o grafo.
+ *   A lib segue usando o three bundlado dela — mesma versão, instâncias
+ *   distintas são compatíveis para objetos básicos (Mesh/Sprite/Group).
+ *
  * Place this in the <head> of the HTML document.
  */
-export const GRAPH_3D_CDN = `<script src="https://cdn.jsdelivr.net/npm/3d-force-graph@1.80.0/dist/3d-force-graph.min.js"></script>`;
+export const GRAPH_3D_CDN = `<script src="https://cdn.jsdelivr.net/npm/3d-force-graph@1.80.0/dist/3d-force-graph.min.js"></script>
+<script>window.__threeReady = import("https://cdn.jsdelivr.net/npm/three@0.179.1/build/three.module.js").then(function (m) { window.THREE = m; });</script>`;
 
 // ── CSS ───────────────────────────────────────────────────────────────
 
@@ -248,6 +259,13 @@ if (graphData.nodes.length > 0) {
 
   var container = document.getElementById('network-graph');
 
+  // O nodeThreeObject depende de window.THREE, carregado via dynamic
+  // import (ver GRAPH_3D_CDN) — aguarda __threeReady antes de instanciar.
+  function _initWhenThreeReady() {
+    var ready = window.__threeReady || Promise.resolve();
+    ready.then(function() { _initGraph3D(container, nodes3d, links3d); });
+  }
+
   // If container is hidden (e.g. inside a non-active tab), defer initialization
   var containerVisible = container.offsetWidth > 0 && container.offsetHeight > 0;
   if (!containerVisible) {
@@ -257,31 +275,16 @@ if (graphData.nodes.length > 0) {
       if (container.offsetWidth > 0 && container.offsetHeight > 0 && _initPending) {
         _initPending = false;
         clearInterval(_initInterval);
-        _initGraph3D(container, nodes3d, links3d);
+        _initWhenThreeReady();
       }
     }, 100);
     // Safety: stop polling after 30s
     setTimeout(function() { clearInterval(_initInterval); }, 30000);
   } else {
-    _initGraph3D(container, nodes3d, links3d);
+    _initWhenThreeReady();
   }
 
   function _initGraph3D(container, nodes3d, links3d) {
-
-  // Create controls overlay
-  var controlsDiv = document.createElement('div');
-  controlsDiv.className = 'graph-3d-controls';
-  controlsDiv.innerHTML =
-    '<button class="graph-3d-btn" id="btn-reset-view" title="Resetar c\\u00e2mera">\\u2728 Resetar</button>' +
-    '<button class="graph-3d-btn" id="btn-toggle-labels" title="Alternar r\\u00f3tulos">\\u1f5f Etiquetas</button>' +
-    '<button class="graph-3d-btn" id="btn-toggle-rotation" title="Auto-rota\\u00e7\\u00e3o">\\u27f3 Auto-rot</button>';
-  container.style.position = 'relative';
-  container.appendChild(controlsDiv);
-
-  var infoDiv = document.createElement('div');
-  infoDiv.className = 'graph-3d-info';
-  infoDiv.textContent = 'Arraste para rotacionar \\u00b7 Scroll para zoom \\u00b7 Clique direito para pan';
-  container.appendChild(infoDiv);
 
   var autoRotate = false;
 
@@ -328,6 +331,22 @@ if (graphData.nodes.length > 0) {
     .onBackgroundRightClick(function() {
       window._visTooltip.suppressTooltip();
     });
+
+  // Create controls overlay — DEPOIS do ForceGraph3D(): a lib limpa o
+  // container no init, então elementos inseridos antes são removidos.
+  var controlsDiv = document.createElement('div');
+  controlsDiv.className = 'graph-3d-controls';
+  controlsDiv.innerHTML =
+    '<button class="graph-3d-btn" id="btn-reset-view" title="Resetar c\\u00e2mera">\\u2728 Resetar</button>' +
+    '<button class="graph-3d-btn" id="btn-toggle-labels" title="Alternar r\\u00f3tulos">\\u1f5f Etiquetas</button>' +
+    '<button class="graph-3d-btn" id="btn-toggle-rotation" title="Auto-rota\\u00e7\\u00e3o">\\u27f3 Auto-rot</button>';
+  container.style.position = 'relative';
+  container.appendChild(controlsDiv);
+
+  var infoDiv = document.createElement('div');
+  infoDiv.className = 'graph-3d-info';
+  infoDiv.textContent = 'Arraste para rotacionar \\u00b7 Scroll para zoom \\u00b7 Clique direito para pan';
+  container.appendChild(infoDiv);
 
   // Track mouse position for tooltip placement
   var _lastMouseX = 0;
@@ -436,8 +455,10 @@ if (graphData.nodes.length > 0) {
   });
 
   // ── Dashed links for alerts ──
-  _graph3d.linkLineDash(function(link) {
-    return link.dashes ? [4, 2] : null;
+  // 3d-force-graph não implementa linkLineDash (API exclusiva do force-graph
+  // 2D). Arestas de alerta mantêm cor #ce6e6d + partículas reforçadas.
+  _graph3d.linkDirectionalParticles(function(link) {
+    return link.dashes ? 5 : 2;
   });
 
   // ── Fit view after initial stabilization ──

@@ -926,20 +926,30 @@ function buildGraphData(
       return { from, to, value: edge.count, title: tooltip, width, color: edgeColor, highlight: edgeHighlight, volumeLabel };
     });
 
+  // Arestas creator→pool só podem referenciar ids presentes em `nodes` —
+  // um alvo ausente faz o 3d-force-graph abortar com "node not found".
+  // Em Uniswap V4 pair_address é o PoolId (bytes32), não um nó endereçável:
+  // a aresta aponta para o contrato-fonte (PoolManager/factory) e o PoolId
+  // vai no tooltip.
+  const nodeIds = new Set(nodes.map((n) => n.id));
   const poolEdges: GraphEdge[] = [];
   for (const [creatorAddr, creations] of poolMap) {
     for (const pc of creations) {
-      const pairLower = pc.pair_address.toLowerCase();
-      if (creatorAddr === pairLower) continue;
+      const isAddressPair = /^0x[0-9a-f]{40}$/.test(pc.pair_address);
+      const targetId = (isAddressPair ? pc.pair_address : pc.factory_address).toLowerCase();
+      if (creatorAddr === targetId) continue;
+      if (!nodeIds.has(creatorAddr) || !nodeIds.has(targetId)) continue;
       const fromInfo = labels.get(creatorAddr);
+      const toInfo = labels.get(targetId);
       const fromDisplay = anonFor(creatorAddr) ?? (fromInfo?.label ? `${fromInfo.label} (${shortAddr(creatorAddr)})` : shortAddr(creatorAddr));
-      const toDisplay = anonFor(pairLower) ?? shortAddr(pairLower);
+      const toDisplay = anonFor(targetId) ?? (toInfo?.label ? `${toInfo.label} (${shortAddr(targetId)})` : shortAddr(targetId));
       const fromLink = anonFor(creatorAddr) ? `<code>${fromDisplay}</code>` : polyScanLink(creatorAddr, fromDisplay);
-      const toLink = anonFor(pairLower) ? `<code>${toDisplay}</code>` : polyScanLink(pairLower, toDisplay);
-      const tooltip = `<b style="color:#fcc650;">🏭 createPool (${pc.dex_name})</b><br>De: ${fromLink}<br>Para: ${toLink}<br>Bloco: ${pc.block_number}<br>Tokens: ${polyScanLink(pc.token0, shortAddr(pc.token0))} ↔ ${polyScanLink(pc.token1, shortAddr(pc.token1))}`;
+      const toLink = anonFor(targetId) ? `<code>${toDisplay}</code>` : polyScanLink(targetId, toDisplay);
+      const poolIdHtml = isAddressPair ? "" : `<br>PoolId: <code>${pc.pair_address}</code>`;
+      const tooltip = `<b style="color:#fcc650;">🏭 createPool (${pc.dex_name})</b><br>De: ${fromLink}<br>Para: ${toLink}${poolIdHtml}<br>Bloco: ${pc.block_number}<br>Tokens: ${polyScanLink(pc.token0, shortAddr(pc.token0))} ↔ ${polyScanLink(pc.token1, shortAddr(pc.token1))}`;
       poolEdges.push({
         from: creatorAddr,
-        to: pairLower,
+        to: targetId,
         value: 1,
         title: tooltip,
         width: 2,
