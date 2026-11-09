@@ -13,12 +13,18 @@
  *   npm run analysis:cas:graph -- --depth 3
  *   npm run analysis:cas:graph -- "Rapport" --depth 2
  *   npm run analysis:cas:graph -- 0xc590…c02b "Ednardo" --depth 2
+ *   npm run analysis:cas:graph -- --from 2026-11-01 --to 2026-11-05
+ *   npm run analysis:cas:graph -- --from 01/11/2026_12-00 --to 05/11/2026
  *   (ou) npx tsx scripts/analysis/cas_graph_dashboard.ts
  *
  * Flags:
  *   --depth N   Profundidade BFS a partir de endereços conhecidos (default: GRAPH_DEPTH_DEFAULT do .env)
  *   --use-db    Usa apenas o banco SQLite (sem sync via API)
  *   --anon      Oculta labels e observações
+ *   --from D    Considera apenas transferências a partir de D (UTC).
+ *   --to D      Considera apenas transferências até D (UTC, inclusivo;
+ *               data-only cobre o dia inteiro até 23:59:59).
+ *               Formatos de D: AAAA-MM-DD[_HH-MM] ou DD/MM/AAAA[_HH-MM].
  *
  * Alvos posicionais (opcional):
  *   Endereço, nome, índice, ou endereço encurtado (0x……) para centrar o grafo.
@@ -57,6 +63,7 @@ import {
 } from "../utils/cas_database";
 import { importAllCsvs } from "../utils/cas_csv_import";
 import { detectManipulationSignals, ManipulationSignal } from "../utils/cas_manipulation";
+import { describeDateRange, inDateRange, resolveDateRange } from "../utils/date_range";
 import { polyScanLink } from "../utils/vis_tooltip";
 import {
   GRAPH_3D_CDN,
@@ -1265,7 +1272,7 @@ function diagnosisToHtml(d: GnnDiagnosis, graphAlerts: GraphAlert[]): string {
 
 // ── HTML graph dashboard ──────────────────────────────────────────────
 
-function buildGraphHtml(graph: GraphData, tokenAddress: string, diagnosis?: GnnDiagnosis | null): string {
+function buildGraphHtml(graph: GraphData, tokenAddress: string, diagnosis?: GnnDiagnosis | null, periodLabel?: string): string {
   const diagnosisHtml = diagnosis ? diagnosisToHtml(diagnosis, graph.alerts) : "";
   const graphDataJson = JSON.stringify({ nodes: graph.nodes, edges: graph.edges });
 
@@ -1303,7 +1310,7 @@ ${GRAPH_3D_CDN}
 </head>
 <body>
 <h1>🔗 Grafo 3D de Transferências CAS</h1>
-<p class="sub">Token: <code>${tokenAddress}</code> · Nós: ${graph.meta.nodeCount} · Arestas: ${graph.meta.edgeCount} · Volume: ${fmt(graph.meta.totalVolume, 2)} CAS · Alertas: ${graph.meta.alertCount}</p>
+<p class="sub">Token: <code>${tokenAddress}</code> · Nós: ${graph.meta.nodeCount} · Arestas: ${graph.meta.edgeCount} · Volume: ${fmt(graph.meta.totalVolume, 2)} CAS · Alertas: ${graph.meta.alertCount}${periodLabel ? ` · Período: ${periodLabel}` : ""}</p>
 
 <div class="kpis">
   <div class="kpi"><div class="v">${graph.meta.nodeCount}</div><div class="l">Endereços</div></div>
@@ -1438,12 +1445,25 @@ async function main(): Promise<void> {
 
   // Parse positional targets (address, name, index, shortened address)
   const positionalTargets: string[] = [];
+  let fromArg: string | undefined;
+  let toArg: string | undefined;
   for (let i = 0; i < cliArgs.length; i++) {
     const arg = cliArgs[i];
     if (arg === "--depth") { i++; continue; }
+    if (arg === "--from") { fromArg = cliArgs[++i]; continue; }
+    if (arg === "--to") { toArg = cliArgs[++i]; continue; }
     if (arg === "--index") { const v = cliArgs[++i]; if (v) positionalTargets.push(v); continue; }
     if (arg.startsWith("--")) continue;
     positionalTargets.push(arg);
+  }
+
+  const { range: dateRange, error: dateError } = resolveDateRange(fromArg, toArg);
+  if (dateError) {
+    log("ERROR", "main", dateError);
+    process.exit(1);
+  }
+  if (dateRange) {
+    log("INFO", "main", "Filtro de período ativo", { periodo: describeDateRange(dateRange) });
   }
 
   const envDepth = parseInt(process.env.GRAPH_DEPTH_DEFAULT ?? "0", 10);
@@ -1541,6 +1561,16 @@ async function main(): Promise<void> {
     }
   }
 
+  if (dateRange) {
+    const before = transfers.length;
+    transfers = transfers.filter((t) => inDateRange(Number(t.timeStamp), dateRange));
+    log("OK", "main", "Transferências filtradas por período", {
+      periodo: describeDateRange(dateRange),
+      antes: before,
+      depois: transfers.length,
+    });
+  }
+
   if (totalSupply === 0n && transfers.length > 0) {
     const balances = new Map<string, bigint>();
     for (const t of transfers) {
@@ -1555,7 +1585,9 @@ async function main(): Promise<void> {
   }
 
   if (transfers.length === 0) {
-    log("ERROR", "main", "Nenhuma transferência encontrada");
+    log("ERROR", "main", dateRange
+      ? `Nenhuma transferência encontrada no período ${describeDateRange(dateRange)}`
+      : "Nenhuma transferência encontrada");
     closeDB();
     process.exit(1);
   }
@@ -1607,7 +1639,7 @@ async function main(): Promise<void> {
   fs.mkdirSync(reportsDir, { recursive: true });
 
   const outFile = path.join(reportsDir, `cas_graph_${new Date().toISOString().slice(0, 10)}.html`);
-  fs.writeFileSync(outFile, buildGraphHtml(graph, tokenAddress, diagnosis), "utf-8");
+  fs.writeFileSync(outFile, buildGraphHtml(graph, tokenAddress, diagnosis, dateRange ? describeDateRange(dateRange) : undefined), "utf-8");
   log("OK", "main", "Relatório de grafo salvo", { file: outFile });
 
   // Also save JSON for programmatic consumption
