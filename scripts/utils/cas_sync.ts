@@ -318,18 +318,59 @@ interface PoolCreatorInfo {
   dexName: string;
 }
 
-// Endereços canônicos das factories V2 na Polygon mainnet, verificados
-// on-chain via `factory()` dos LP pairs conhecidos. Sobrescrevíveis via
-// <DEX>_FACTORY_ADDRESS no .env.
-const DEX_FACTORIES: { name: string; address: string }[] = [
-  { name: "QuickSwap", address: process.env.QUICKSWAP_FACTORY_ADDRESS?.trim() || "0x5757371414417b8c6caad45baef941abc7d3ab32" },
-  { name: "SushiSwap", address: process.env.SUSHISWAP_FACTORY_ADDRESS?.trim() || "0xc35DADB65012eC5796536bD9864eD8773aBc74C4" },
-  { name: "ApeSwap", address: process.env.APESWAP_FACTORY_ADDRESS?.trim() || "0xCf083Be4164828f00cAE704EC15a36D711491284" },
-  { name: "Dfyn", address: process.env.DFYN_FACTORY_ADDRESS?.trim() || "0xE7Fb3e833eFE5F9c441105EB65Ef8b261266423b" },
-];
+// Protocolos cobertos pela descoberta de pools: factories V2-style
+// (PairCreated), Uniswap V3 (PoolCreated), Algebra (Pool) e Uniswap V4
+// (Initialize no PoolManager singleton — não existe contrato de pair,
+// o identificador único do pool é o PoolId bytes32 em topics[1]).
+type PoolEventKind = "v2" | "v3" | "v4" | "algebra";
 
-// keccak256("PairCreated(address,address,address,uint256)") — padrão Uniswap V2.
-const PAIR_CREATED_TOPIC = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9";
+interface DexPoolSource {
+  name: string;
+  kind: PoolEventKind;
+  address: string;
+}
+
+// keccak256 do evento de criação de pool de cada protocolo.
+const POOL_EVENT_TOPICS: Record<PoolEventKind, string> = {
+  v2: "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9", // PairCreated(address,address,address,uint256)
+  v3: "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118", // PoolCreated(address,address,uint24,int24,address)
+  algebra: "0x91ccaa7a278130b65168c3a0c8d3bcae84cf5e43704342bd3ec0b59e59c036db", // Pool(address,address,address)
+  v4: "0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438", // Initialize(bytes32,address,address,uint24,int24,address,uint160,int24)
+};
+
+const POOL_EVENT_NAMES: Record<PoolEventKind, string> = {
+  v2: "PairCreated",
+  v3: "PoolCreated",
+  algebra: "Pool",
+  v4: "Initialize",
+};
+
+function envAddress(...keys: string[]): string | null {
+  for (const key of keys) {
+    const v = process.env[key]?.trim();
+    if (v) return v;
+  }
+  return null;
+}
+
+// Fontes de criação de pools na Polygon mainnet. Endereços canônicos
+// verificados on-chain (via factory() dos LP pairs e eventos emitidos);
+// todos sobrescrevíveis via .env. Fontes sem endereço são ignoradas —
+// Uniswap V2 não tem factory canônica na Polygon e só entra se
+// UNISWAP_V2_FACTORY_ADDRESS/_FACTORY estiver configurado.
+function poolSources(): DexPoolSource[] {
+  const defs: { name: string; kind: PoolEventKind; address: string | null }[] = [
+    { name: "QuickSwap", kind: "v2", address: envAddress("QUICKSWAP_FACTORY_ADDRESS") ?? "0x5757371414417b8c6caad45baef941abc7d3ab32" },
+    { name: "SushiSwap", kind: "v2", address: envAddress("SUSHISWAP_FACTORY_ADDRESS") ?? "0xc35DADB65012eC5796536bD9864eD8773aBc74C4" },
+    { name: "ApeSwap", kind: "v2", address: envAddress("APESWAP_FACTORY_ADDRESS") ?? "0xCf083Be4164828f00cAE704EC15a36D711491284" },
+    { name: "Dfyn", kind: "v2", address: envAddress("DFYN_FACTORY_ADDRESS") ?? "0xE7Fb3e833eFE5F9c441105EB65Ef8b261266423b" },
+    { name: "Uniswap V2", kind: "v2", address: envAddress("UNISWAP_V2_FACTORY_ADDRESS", "UNISWAP_V2_FACTORY") },
+    { name: "Uniswap V3", kind: "v3", address: envAddress("UNISWAP_V3_FACTORY_ADDRESS", "UNISWAP_V3_FACTORY") ?? "0x1F98431c8aD98523631AE4a59f267346ea31F984" },
+    { name: "QuickSwap V3 (Algebra)", kind: "algebra", address: envAddress("QUICKSWAP_V3_FACTORY_ADDRESS") ?? "0x411b0facc3489691f28ad58c47006af5e3ab3a28" },
+    { name: "Uniswap V4", kind: "v4", address: envAddress("UNISWAP_V4_POOL_MANAGER_ADDRESS", "UNISWAP_V4_POOL_MANAGER") ?? "0x67366782805870060151383f4bbff9dab53e5cd6" },
+  ];
+  return defs.filter((d): d is DexPoolSource => d.address !== null);
+}
 
 function padAddress(addr: string): string {
   const clean = addr.toLowerCase().replace(/^0x/, "");
@@ -367,9 +408,46 @@ async function fetchTxSender(txHash: string): Promise<string | null> {
   }
 }
 
+// Extrai um endereço de um tópico indexado (32 bytes, 20 bytes finais).
+function topicAddress(entry: PolygonscanLog, index: number): string {
+  return "0x" + (entry.topics[index]?.slice(26) ?? "").toLowerCase();
+}
+
+// Extrai um endereço de uma word de `data` (non-indexed, 20 bytes finais).
+function dataAddress(entry: PolygonscanLog, word: number): string {
+  const start = 2 + word * 64 + 24;
+  return "0x" + (entry.data ?? "").slice(start, start + 40).toLowerCase();
+}
+
 /**
- * Descobre e registra pool creators do token CAS via logs de PairCreated
- * nas factories DEX conhecidas.
+ * Decodifica um log de criação de pool conforme o layout do protocolo.
+ *
+ * - v2/algebra: token0/topics[1], token1/topics[2], pool em data word 0.
+ * - v3: token0/topics[1], token1/topics[2], fee/topics[3], pool em data word 1.
+ * - v4: PoolId/topics[1], currency0/topics[2], currency1/topics[3]. Em V4
+ *   não existe contrato de pair — o PoolId (bytes32) é registrado em
+ *   `pair_address` por ser a chave única do pool.
+ *
+ * @returns `{pairAddress, token0, token1}` ou `null` se o log não decodifica.
+ */
+function parsePoolLog(
+  source: DexPoolSource,
+  entry: PolygonscanLog,
+): { pairAddress: string; token0: string; token1: string } | null {
+  if (source.kind === "v4") {
+    const pairAddress = (entry.topics[1] ?? "").toLowerCase();
+    if (!/^0x[0-9a-f]{64}$/.test(pairAddress)) return null;
+    return { pairAddress, token0: topicAddress(entry, 2), token1: topicAddress(entry, 3) };
+  }
+  const pairAddress = dataAddress(entry, source.kind === "v3" ? 1 : 0);
+  if (!/^0x[0-9a-f]{40}$/.test(pairAddress)) return null;
+  return { pairAddress, token0: topicAddress(entry, 1), token1: topicAddress(entry, 2) };
+}
+
+/**
+ * Descobre e registra pool creators do token CAS via logs de criação de
+ * pools (PairCreated/PoolCreated/Pool/Initialize) nas fontes DEX
+ * conhecidas — V2-style, Uniswap V3, Algebra e Uniswap V4.
  */
 export async function syncPoolCreators(tokenAddress: string): Promise<void> {
   const results: PoolCreatorInfo[] = [];
@@ -377,60 +455,58 @@ export async function syncPoolCreators(tokenAddress: string): Promise<void> {
   const dbPools = getAllPoolCreations();
   const knownPairs = new Set(dbPools.map((p) => p.pair_address.toLowerCase()));
 
-  for (const factory of DEX_FACTORIES) {
-    const factoryLower = factory.address.toLowerCase();
+  for (const source of poolSources()) {
+    const sourceLower = source.address.toLowerCase();
     const alreadySynced = dbPools.some(
-      (p) => p.factory_address.toLowerCase() === factoryLower,
+      (p) => p.factory_address.toLowerCase() === sourceLower,
     );
 
     if (alreadySynced) {
-      log("INFO", "syncPoolCreators", `Factory ${factory.name} já sincronizada, pulando API`, { factory: factory.address });
+      log("INFO", "syncPoolCreators", `Fonte ${source.name} já sincronizada, pulando API`, { address: source.address });
       continue;
     }
 
-    log("INFO", "syncPoolCreators", `Buscando PairCreated em ${factory.name}`, { factory: factory.address });
+    const eventName = POOL_EVENT_NAMES[source.kind];
+    log("INFO", "syncPoolCreators", `Buscando ${eventName} em ${source.name}`, { kind: source.kind, address: source.address });
 
-    // PairCreated(token0 indexed, token1 indexed, pair, uint): CAS pode
-    // ocupar token0 (topic1) ou token1 (topic2); consulta ambos e mescla.
+    // O token pode ocupar qualquer posição indexada do par/currency;
+    // consulta ambas e mescla (v4: currency0/topics[2], currency1/topics[3]).
+    const tokenParams = source.kind === "v4" ? ["topic2", "topic3"] : ["topic1", "topic2"];
     const logsByKey = new Map<string, PolygonscanLog>();
-    for (const topicParam of ["topic1", "topic2"] as const) {
+    for (const topicParam of tokenParams) {
       try {
         const raw = await scanRequest({
           module: "logs",
           action: "getLogs",
           fromBlock: "0",
           toBlock: "latest",
-          address: factory.address,
-          topic0: PAIR_CREATED_TOPIC,
+          address: source.address,
+          topic0: POOL_EVENT_TOPICS[source.kind],
           [topicParam]: paddedToken,
         });
         for (const entry of raw as PolygonscanLog[]) {
           logsByKey.set(`${entry.transactionHash}:${entry.logIndex ?? "0"}`, entry);
         }
       } catch (err) {
-        log("WARN", "syncPoolCreators", `Falha ao buscar logs de ${factory.name}`, { topicParam, error: (err as Error).message });
+        log("WARN", "syncPoolCreators", `Falha ao buscar logs de ${source.name}`, { topicParam, error: (err as Error).message });
       }
     }
     const logs = [...logsByKey.values()];
 
     if (logs.length === 0) {
-      log("INFO", "syncPoolCreators", `Nenhum pool encontrado em ${factory.name}`);
+      log("INFO", "syncPoolCreators", `Nenhum pool encontrado em ${source.name}`);
       continue;
     }
 
-    log("OK", "syncPoolCreators", `Pools encontrados em ${factory.name}`, { count: logs.length });
+    log("OK", "syncPoolCreators", `Pools encontrados em ${source.name}`, { count: logs.length });
 
     for (const logEntry of logs) {
-      // token0/topics[1] e token1/topics[2] são indexados; o endereço do
-      // pair não é indexado e vem na primeira word de `data`.
-      const token0 = "0x" + (logEntry.topics[1]?.slice(26) ?? "").toLowerCase();
-      const token1 = "0x" + (logEntry.topics[2]?.slice(26) ?? "").toLowerCase();
-      const pairAddress = "0x" + (logEntry.data?.slice(26, 66) ?? "").toLowerCase();
-
-      if (pairAddress.length !== 42) {
-        log("WARN", "syncPoolCreators", "Log PairCreated sem pair válido em data", { txHash: logEntry.transactionHash.slice(0, 20) });
+      const parsed = parsePoolLog(source, logEntry);
+      if (!parsed) {
+        log("WARN", "syncPoolCreators", `Log ${eventName} sem identificador de pool válido`, { txHash: logEntry.transactionHash.slice(0, 20) });
         continue;
       }
+      const { pairAddress, token0, token1 } = parsed;
 
       if (knownPairs.has(pairAddress)) continue;
 
@@ -442,14 +518,14 @@ export async function syncPoolCreators(tokenAddress: string): Promise<void> {
 
       const info: PoolCreatorInfo = {
         pairAddress,
-        factoryAddress: factoryLower,
+        factoryAddress: sourceLower,
         creatorAddress: creator.toLowerCase(),
         token0,
         token1,
         txHash: logEntry.transactionHash.toLowerCase(),
         blockNumber: parseInt(logEntry.blockNumber, 16),
         timestamp: parseInt(logEntry.timeStamp, 16),
-        dexName: factory.name,
+        dexName: source.name,
       };
 
       results.push(info);
@@ -467,11 +543,15 @@ export async function syncPoolCreators(tokenAddress: string): Promise<void> {
         dex_name: info.dexName,
       });
 
-      upsertAddress(info.creatorAddress, `Pool Creator (${factory.name})`, "pool_creator", false);
-      upsertAddress(info.pairAddress, `${factory.name} LP Pair`, "lp", true);
+      upsertAddress(info.creatorAddress, `Pool Creator (${source.name})`, "pool_creator", false);
+      // V4 não tem contrato de pair (PoolId bytes32) — só endereços reais
+      // são registrados como LP na tabela de endereços.
+      if (/^0x[0-9a-f]{40}$/.test(pairAddress)) {
+        upsertAddress(info.pairAddress, `${source.name} Pool`, "lp", true);
+      }
 
       log("OK", "syncPoolCreators", "Pool registrado", {
-        dex: factory.name,
+        dex: source.name,
         pair: pairAddress,
         creator: creator.toLowerCase(),
         block: info.blockNumber,
