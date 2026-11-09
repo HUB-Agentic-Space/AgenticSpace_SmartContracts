@@ -214,7 +214,7 @@ async function main(): Promise<void> {
   // apenas com os saldos (CAS + contrapartidas nas proporções do preço-alvo).
   const mintEnabled = mintAmount > 0n;
   const rangePct = BigInt(process.env.UNIV4_RANGE_PCT ?? "10"); // ±%
-  const slippageBps = 200n; // +2% de margem nos amountMax
+  const slippageBps = 500n; // +5% de margem nos amountMax (rounding interno do PositionManager)
 
   // Preço de referência CAS em WPOL. "auto"/"market"/vazio deriva do spot
   // SushiSwap (reservas); valor numérico (ex.: 0.00143) força o preço.
@@ -496,7 +496,14 @@ async function main(): Promise<void> {
 
   const txLog: { label: string; hash: string }[] = [];
   const send = async (label: string, buildTx: () => Promise<any>): Promise<any> => {
-    const tx = await buildTx();
+    let tx: any;
+    try {
+      tx = await buildTx();
+    } catch (err: any) {
+      const revertData = err?.data?.data ?? err?.data ?? err?.info?.error?.data;
+      log("ERROR", `revert ao enviar: ${label}`, { revertData: String(revertData ?? err?.message ?? err) });
+      process.exit(1);
+    }
     console.log(`  TX ${label}: ${tx.hash}`);
     const receipt = await tx.wait();
     if (!receipt || receipt.status !== 1) {
@@ -584,9 +591,12 @@ async function main(): Promise<void> {
       ["address", "address"],
       [row.poolKey[0], row.poolKey[1]],
     );
+    // Actions compactadas como bytes (0x02=MINT_POSITION, 0x0d=SETTLE_PAIR) —
+    // formato exigido pelo Planner do PositionManager na Polygon.
+    const actions = ethers.hexlify(new Uint8Array([ACTION_MINT_POSITION, ACTION_SETTLE_PAIR]));
     const unlockData = abiCoder.encode(
-      ["uint8[]", "bytes[]"],
-      [[ACTION_MINT_POSITION, ACTION_SETTLE_PAIR], [mintParams, settleParams]],
+      ["bytes", "bytes[]"],
+      [actions, [mintParams, settleParams]],
     );
 
     const nextId: bigint = await posManager.nextTokenId();
