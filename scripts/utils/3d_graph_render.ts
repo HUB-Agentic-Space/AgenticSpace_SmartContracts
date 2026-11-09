@@ -384,32 +384,43 @@ if (graphData.nodes.length > 0) {
     return val.toFixed(2) + ' CAS';
   }
 
-  // ── Text sprite helper for labels (supports multi-line) ──
-  function _makeTextSprite(text) {
+  // ── Text sprite helper for labels ──
+  // Renderiza o texto com fonte auto-ajustada para caber na largura alvo
+  // (em unidades de cena), sem corte: mede a linha mais longa e reduz o
+  // fonte até caber com margem. Retorna {texture, aspect}.
+  function _makeTextSprite(text, targetW) {
     var lines = text.split('\\n');
-    var lineH = 28;
+    var pxPerUnit = 32;
+    var pad = 12;
     var canvas = document.createElement('canvas');
-    canvas.width = 384;
-    canvas.height = lineH * lines.length + 8;
+    canvas.width = Math.max(64, Math.round(targetW * pxPerUnit));
     var ctx = canvas.getContext('2d');
-    ctx.fillStyle = 'rgba(7,4,4,0.78)';
+    var fontSize = 20;
+    ctx.font = 'bold ' + fontSize + 'px system-ui, sans-serif';
+    var longest = 1;
+    lines.forEach(function(l) { longest = Math.max(longest, ctx.measureText(l).width); });
+    fontSize = Math.max(7, Math.min(20, Math.floor(fontSize * (canvas.width - pad * 2) / longest)));
+    var lineH = Math.round(fontSize * 1.3);
+    canvas.height = lineH * lines.length + pad;
+    ctx = canvas.getContext('2d');
+    ctx.fillStyle = 'rgba(7,4,4,0.72)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     lines.forEach(function(line, i) {
-      var y = (i + 0.5) * lineH + 4;
+      var y = (i + 0.5) * lineH + pad / 2;
       if (i === 0) {
-        ctx.font = 'bold 18px system-ui, sans-serif';
+        ctx.font = 'bold ' + fontSize + 'px system-ui, sans-serif';
         ctx.fillStyle = '#ffffff';
       } else {
-        ctx.font = '16px system-ui, sans-serif';
+        ctx.font = Math.max(6, Math.round(fontSize * 0.8)) + 'px system-ui, sans-serif';
         ctx.fillStyle = '#fcc650';
       }
       ctx.fillText(line, canvas.width / 2, y);
     });
     var texture = new THREE.CanvasTexture(canvas);
     texture.minFilter = THREE.LinearFilter;
-    return texture;
+    return { texture: texture, aspect: canvas.height / canvas.width };
   }
 
   // ── Node 3D objects: contract geometry + always-on label sprites ──
@@ -430,20 +441,22 @@ if (graphData.nodes.length > 0) {
       objects.push(new THREE.Mesh(geo, mat));
     }
 
-    // Label sprite with address/label + balance
+    // Label sprite contido à representação do nó: largura ~ diâmetro,
+    // centrado no nó — legível conforme o zoom aproxima.
     if (_labelsVisible) {
       var labelText = node.label || node.id || '';
       if (node.holderBalance && node.holderBalance > 0) {
         labelText += '\\n' + _formatBalance(node.holderBalance);
       }
+      var nodeRadius = node.isContract ? 8 : 6 * Math.cbrt(Math.max(1, node.val));
+      var labelW = nodeRadius * 2.1;
+      var spr = _makeTextSprite(labelText, labelW);
       var sprite = new THREE.Sprite(new THREE.SpriteMaterial({
-        map: _makeTextSprite(labelText),
+        map: spr.texture,
         transparent: true,
         depthTest: false,
       }));
-      var lineCount = labelText.split('\\n').length;
-      sprite.scale.set(80, 16 * lineCount + 4, 1);
-      sprite.position.y = -(14 + 8 * lineCount);
+      sprite.scale.set(labelW, labelW * spr.aspect, 1);
       objects.push(sprite);
     }
 
