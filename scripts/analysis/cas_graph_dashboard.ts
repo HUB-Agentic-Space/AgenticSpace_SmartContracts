@@ -3,7 +3,7 @@
  * -------------------
  * Script especializado em visualização de grafos de transferências do
  * token CAS na Polygon Mainnet. Lê transferências do SQLite local ou
- * sincroniza via Polygonscan/Etherscan V2, calcula saldos/labels e gera
+ * sincroniza via Etherscan V2 (multichain), calcula saldos/labels e gera
  * um HTML independente com o grafo 3D interativo (3d-force-graph / Three.js).
  *
  * Uso:
@@ -395,8 +395,10 @@ function computeGraphAlerts(transfers: TokenTransfer[], tokenAddress: string, an
 // ── Polygonscan / Etherscan V2 API ────────────────────────────────────
 
 const CHAIN_ID = 137;
+// A API V1 dedicada (api.polygonscan.com/api) foi descontinuada e responde
+// HTTP 301 para docs.etherscan.io/v2-migration — apenas o endpoint V2
+// multichain permanece funcional para a Polygon (chainid=137).
 const API_BASES = [
-  "https://api.polygonscan.com/api",
   "https://api.etherscan.io/v2/api",
 ];
 
@@ -477,19 +479,46 @@ async function scanRequest(params: Record<string, string>): Promise<unknown> {
           }
           throw new Error(`Resposta não-JSON (${contentType}): ${detail}`);
         }
-        const body = (await res.json()) as { status: string; message: string; result: unknown };
-        if (body.status === "1" || (body.status === "0" && body.message === "No transactions found")) {
+        const body = (await res.json()) as {
+          status?: string;
+          message?: string;
+          result?: unknown;
+          jsonrpc?: string;
+          error?: { code?: number; message?: string };
+        };
+
+        // Envelope JSON-RPC (module=proxy): {jsonrpc, id, result|error} — sem status/message.
+        if (body.jsonrpc === "2.0") {
+          const rpcError = body.error;
+          if (rpcError) {
+            const rpcMsg = `RPC ${rpcError.code ?? "?"}: ${rpcError.message ?? "erro desconhecido"}`;
+            if (isTransientError(rpcError.code ?? 0, rpcMsg) && attempt < MAX_RETRIES) {
+              const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
+              await sleep(backoff);
+              continue;
+            }
+            throw new Error(rpcMsg);
+          }
+          if (pinnedBase === null) pinnedBase = base;
+          return body.result;
+        }
+
+        // status=0 com "No ... found" é resultado vazio válido (ex.: getLogs
+        // retorna "No records found"), não erro de API.
+        const apiMessage = body.message ?? "";
+        const isBenignEmpty = body.status === "0" && /^no [\w ]*found$/i.test(apiMessage);
+        if (body.status === "1" || isBenignEmpty) {
           if (pinnedBase === null) pinnedBase = base;
           return body.result;
         }
         const resultStr = typeof body.result === "string" ? body.result : JSON.stringify(body.result);
-        const combinedMsg = `${body.message} ${resultStr}`;
+        const combinedMsg = `${apiMessage} ${resultStr}`;
         if (isTransientError(0, combinedMsg) && attempt < MAX_RETRIES) {
           const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
           await sleep(backoff + RATE_LIMIT_EXTRA_DELAY_MS);
           continue;
         }
-        throw new Error(`API status=${body.status} message=${body.message} result=${resultStr.slice(0, 200)}`);
+        throw new Error(`API status=${body.status} message=${apiMessage} result=${resultStr.slice(0, 200)}`);
       } catch (err) {
         const errMsg = (err as Error).message;
         const isAbort = errMsg.includes("abort") || errMsg.includes("timeout");
@@ -529,14 +558,18 @@ interface PoolCreatorInfo {
   dexName: string;
 }
 
+// Endereços canônicos das factories V2 na Polygon mainnet, verificados
+// on-chain via `factory()` dos LP pairs conhecidos. Sobrescrevíveis via
+// <DEX>_FACTORY_ADDRESS no .env.
 const DEX_FACTORIES: { name: string; address: string }[] = [
-  { name: "QuickSwap", address: "0x8756a862d01e16f8E2e20E24aC4B68B83e39B5B5" },
-  { name: "SushiSwap", address: "0xc35DADB65012eC5796536bD9864eD8773aBc74C4" },
-  { name: "ApeSwap", address: "0x0841AD8bA9d0712e87B3720c71689df2d64dD5b8" },
-  { name: "Dfyn", address: "0x3f4F49784604BBd4a64e875c4FE15aDB7B30BBcB" },
+  { name: "QuickSwap", address: process.env.QUICKSWAP_FACTORY_ADDRESS?.trim() || "0x5757371414417b8c6caad45baef941abc7d3ab32" },
+  { name: "SushiSwap", address: process.env.SUSHISWAP_FACTORY_ADDRESS?.trim() || "0xc35DADB65012eC5796536bD9864eD8773aBc74C4" },
+  { name: "ApeSwap", address: process.env.APESWAP_FACTORY_ADDRESS?.trim() || "0xCf083Be4164828f00cAE704EC15a36D711491284" },
+  { name: "Dfyn", address: process.env.DFYN_FACTORY_ADDRESS?.trim() || "0xE7Fb3e833eFE5F9c441105EB65Ef8b261266423b" },
 ];
 
-const PAIR_CREATED_TOPIC = "0x0d3648ea0f249681bC1dE2f9E0dD1F6d08e08c7b4e000000000000000000000a";
+// keccak256("PairCreated(address,address,address,uint256)") — padrão Uniswap V2.
+const PAIR_CREATED_TOPIC = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9";
 
 function padAddress(addr: string): string {
   const clean = addr.toLowerCase().replace(/^0x/, "");
@@ -550,6 +583,7 @@ interface PolygonscanLog {
   transactionHash: string;
   blockNumber: string;
   timeStamp: string;
+  logIndex?: string;
 }
 
 interface PolygonscanTx {
@@ -592,19 +626,10 @@ async function fetchPoolCreators(tokenAddress: string): Promise<PoolCreatorInfo[
 
     log("INFO", "fetchPoolCreators", `Buscando PairCreated em ${factory.name}`, { factory: factory.address });
 
-    let logs: PolygonscanLog[];
-    try {
-      const raw = await scanRequest({
-        module: "logs",
-        action: "getLogs",
-        fromBlock: "0",
-        toBlock: "latest",
-        address: factory.address,
-        topic0: PAIR_CREATED_TOPIC,
-        topic2: paddedToken,
-      });
-      logs = raw as PolygonscanLog[];
-    } catch {
+    // PairCreated(token0 indexed, token1 indexed, pair, uint): CAS pode
+    // ocupar token0 (topic1) ou token1 (topic2); consulta ambos e mescla.
+    const logsByKey = new Map<string, PolygonscanLog>();
+    for (const topicParam of ["topic1", "topic2"] as const) {
       try {
         const raw = await scanRequest({
           module: "logs",
@@ -613,16 +638,18 @@ async function fetchPoolCreators(tokenAddress: string): Promise<PoolCreatorInfo[
           toBlock: "latest",
           address: factory.address,
           topic0: PAIR_CREATED_TOPIC,
-          topic3: paddedToken,
+          [topicParam]: paddedToken,
         });
-        logs = raw as PolygonscanLog[];
+        for (const entry of raw as PolygonscanLog[]) {
+          logsByKey.set(`${entry.transactionHash}:${entry.logIndex ?? "0"}`, entry);
+        }
       } catch (err) {
-        log("WARN", "fetchPoolCreators", `Falha ao buscar logs de ${factory.name}`, { error: (err as Error).message });
-        continue;
+        log("WARN", "fetchPoolCreators", `Falha ao buscar logs de ${factory.name}`, { topicParam, error: (err as Error).message });
       }
     }
+    const logs = [...logsByKey.values()];
 
-    if (!Array.isArray(logs) || logs.length === 0) {
+    if (logs.length === 0) {
       log("INFO", "fetchPoolCreators", `Nenhum pool encontrado em ${factory.name}`);
       continue;
     }
@@ -630,9 +657,16 @@ async function fetchPoolCreators(tokenAddress: string): Promise<PoolCreatorInfo[
     log("OK", "fetchPoolCreators", `Pools encontrados em ${factory.name}`, { count: logs.length });
 
     for (const logEntry of logs) {
-      const pairAddress = "0x" + (logEntry.topics[1]?.slice(26) ?? "").toLowerCase();
-      const token0 = "0x" + (logEntry.topics[2]?.slice(26) ?? "").toLowerCase();
-      const token1 = "0x" + (logEntry.topics[3]?.slice(26) ?? "").toLowerCase();
+      // token0/topics[1] e token1/topics[2] são indexados; o endereço do
+      // pair não é indexado e vem na primeira word de `data`.
+      const token0 = "0x" + (logEntry.topics[1]?.slice(26) ?? "").toLowerCase();
+      const token1 = "0x" + (logEntry.topics[2]?.slice(26) ?? "").toLowerCase();
+      const pairAddress = "0x" + (logEntry.data?.slice(26, 66) ?? "").toLowerCase();
+
+      if (pairAddress.length !== 42) {
+        log("WARN", "fetchPoolCreators", "Log PairCreated sem pair válido em data", { txHash: logEntry.transactionHash.slice(0, 20) });
+        continue;
+      }
 
       if (knownPairs.has(pairAddress)) continue;
 
@@ -650,7 +684,7 @@ async function fetchPoolCreators(tokenAddress: string): Promise<PoolCreatorInfo[
         token1,
         txHash: logEntry.transactionHash.toLowerCase(),
         blockNumber: parseInt(logEntry.blockNumber, 16),
-        timestamp: parseInt(logEntry.timeStamp, 10),
+        timestamp: parseInt(logEntry.timeStamp, 16),
         dexName: factory.name,
       };
 
