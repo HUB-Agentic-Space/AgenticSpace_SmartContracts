@@ -27,12 +27,18 @@
  *   npm run analysis:cas:distribution -- --depth 3
  *   npm run analysis:cas:distribution -- "Rapport" --depth 2
  *   npm run analysis:cas:distribution -- 0xc590…c02b "Ednardo" --depth 2
+ *   npm run analysis:cas:distribution -- --from 2026-11-01 --to 2026-11-05
+ *   npm run analysis:cas:distribution -- --from 01/11/2026_12-00 --to 05/11/2026
  *   (ou) npx hardhat run scripts/analysis/cas_distribution_dashboard.ts
  *
  * Flags:
  *   --depth N   Profundidade BFS a partir de endereços conhecidos (default: GRAPH_DEPTH_DEFAULT do .env)
  *   --use-db    Usa apenas o banco SQLite (sem sync via API)
  *   --anon      Oculta labels e observações
+ *   --from D    Considera apenas transferências a partir de D (UTC).
+ *   --to D      Considera apenas transferências até D (UTC, inclusivo;
+ *               data-only cobre o dia inteiro até 23:59:59).
+ *               Formatos de D: AAAA-MM-DD[_HH-MM] ou DD/MM/AAAA[_HH-MM].
  *
  * Alvos posicionais (opcional):
  *   Endereço, nome, índice, ou endereço encurtado (0x……) para centrar a análise.
@@ -74,6 +80,7 @@ import {
 } from "../utils/cas_database";
 import { importAllCsvs } from "../utils/cas_csv_import";
 import { detectManipulationSignals, type ManipulationSignal, type LabelResolver } from "../utils/cas_manipulation";
+import { describeDateRange, inDateRange, resolveDateRange } from "../utils/date_range";
 import { SocialSentinel, type SentimentSnapshot } from "../utils/social_sentinel";
 import { polyScanLink } from "../utils/vis_tooltip";
 import {
@@ -1204,7 +1211,7 @@ function escapeHtml(text: string): string {
     .replace(/'/g, "&#39;");
 }
 
-function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marketData: MarketData, transfers: TokenTransfer[], signals: ManipulationSignal[], socialSnapshot: SentimentSnapshot | null): string {
+function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marketData: MarketData, transfers: TokenTransfer[], signals: ManipulationSignal[], socialSnapshot: SentimentSnapshot | null, periodLabel?: string): string {
   const labels = knownLabels();
   const topN = metrics.holders.slice(0, 20);
   const othersPct = Math.max(0, 100 - topN.reduce((s, h) => s + h.pct, 0));
@@ -1663,7 +1670,7 @@ ${GRAPH_3D_CDN}
 <h1>🪙 CAS — Painel de Distribuição &amp; Qualidade</h1>
 <p class="sub">
   Token: <a href="https://polygonscan.com/token/${tokenAddress}" target="_blank">${tokenAddress}</a> · Polygon Mainnet (137) ·
-  Gerado em ${new Date().toLocaleString("pt-BR")} · Fonte: Polygonscan ·
+  Gerado em ${new Date().toLocaleString("pt-BR")} · Fonte: Polygonscan${periodLabel ? ` · Período: ${periodLabel}` : ""} ·
   Risco de concentração: <span class="badge" style="background:${riskLevel.color}22;color:${riskLevel.color}">${riskLevel.label}</span> · ${cgBadge}
 </p>
 
@@ -2254,12 +2261,25 @@ async function main(): Promise<void> {
 
   // Parse positional targets (address, name, index, shortened address)
   const positionalTargets: string[] = [];
+  let fromArg: string | undefined;
+  let toArg: string | undefined;
   for (let i = 0; i < cliArgs.length; i++) {
     const arg = cliArgs[i];
     if (arg === "--depth") { i++; continue; }
+    if (arg === "--from") { fromArg = cliArgs[++i]; continue; }
+    if (arg === "--to") { toArg = cliArgs[++i]; continue; }
     if (arg === "--index") { const v = cliArgs[++i]; if (v) positionalTargets.push(v); continue; }
     if (arg.startsWith("--")) continue;
     positionalTargets.push(arg);
+  }
+
+  const { range: dateRange, error: dateError } = resolveDateRange(fromArg, toArg);
+  if (dateError) {
+    log("ERROR", "main", dateError);
+    process.exit(1);
+  }
+  if (dateRange) {
+    log("INFO", "main", "Filtro de período ativo", { periodo: describeDateRange(dateRange) });
   }
 
   const envDepth = parseInt(process.env.GRAPH_DEPTH_DEFAULT ?? "0", 10);
@@ -2376,6 +2396,16 @@ async function main(): Promise<void> {
     }
   }
 
+  if (dateRange) {
+    const before = transfers.length;
+    transfers = transfers.filter((t) => inDateRange(Number(t.timeStamp), dateRange));
+    log("OK", "main", "Transferências filtradas por período", {
+      periodo: describeDateRange(dateRange),
+      antes: before,
+      depois: transfers.length,
+    });
+  }
+
   if (totalSupply === 0n && transfers.length > 0) {
     const balances = new Map<string, bigint>();
     for (const t of transfers) {
@@ -2390,7 +2420,9 @@ async function main(): Promise<void> {
   }
 
   if (transfers.length === 0) {
-    log("ERROR", "main", "Nenhuma transferência encontrada; verifique o endereço do token e a API key");
+    log("ERROR", "main", dateRange
+      ? `Nenhuma transferência encontrada no período ${describeDateRange(dateRange)}`
+      : "Nenhuma transferência encontrada; verifique o endereço do token e a API key");
     closeDB();
     process.exit(1);
   }
@@ -2504,7 +2536,7 @@ async function main(): Promise<void> {
   log("OK", "main", "JSON de sinais salvo", { file: signalsPath });
 
   const outFile = path.join(reportsDir, `cas_distribution_${new Date().toISOString().slice(0, 10)}.html`);
-  fs.writeFileSync(outFile, buildHtml(metrics, tokenAddress, aiHtml, marketData, filteredTransfers, signals, socialSnapshot), "utf-8");
+  fs.writeFileSync(outFile, buildHtml(metrics, tokenAddress, aiHtml, marketData, filteredTransfers, signals, socialSnapshot, dateRange ? describeDateRange(dateRange) : undefined), "utf-8");
   log("OK", "main", "Relatório HTML gerado", { file: outFile });
 
   openBrowser(outFile);
