@@ -51,8 +51,6 @@ import {
   upsertAddress,
   setSyncState,
   recalculateAllAddressStats,
-  insertPoolCreation,
-  getAllPoolCreations,
   getPoolCreatorMap,
   getAddress,
   getAllAddresses,
@@ -62,6 +60,7 @@ import {
   type AddressRecord,
 } from "../utils/cas_database";
 import { importAllCsvs } from "../utils/cas_csv_import";
+import { syncPoolCreators } from "../utils/cas_sync";
 import { detectManipulationSignals, ManipulationSignal } from "../utils/cas_manipulation";
 import { describeDateRange, inDateRange, resolveDateRange } from "../utils/date_range";
 import { polyScanLink } from "../utils/vis_tooltip";
@@ -542,181 +541,6 @@ async function fetchTotalSupply(tokenAddress: string): Promise<bigint> {
     contractaddress: tokenAddress,
   })) as string;
   return BigInt(result);
-}
-
-// ── Pool creator discovery ─────────────────────────────────────────────
-
-interface PoolCreatorInfo {
-  pairAddress: string;
-  factoryAddress: string;
-  creatorAddress: string;
-  token0: string;
-  token1: string;
-  txHash: string;
-  blockNumber: number;
-  timestamp: number;
-  dexName: string;
-}
-
-// Endereços canônicos das factories V2 na Polygon mainnet, verificados
-// on-chain via `factory()` dos LP pairs conhecidos. Sobrescrevíveis via
-// <DEX>_FACTORY_ADDRESS no .env.
-const DEX_FACTORIES: { name: string; address: string }[] = [
-  { name: "QuickSwap", address: process.env.QUICKSWAP_FACTORY_ADDRESS?.trim() || "0x5757371414417b8c6caad45baef941abc7d3ab32" },
-  { name: "SushiSwap", address: process.env.SUSHISWAP_FACTORY_ADDRESS?.trim() || "0xc35DADB65012eC5796536bD9864eD8773aBc74C4" },
-  { name: "ApeSwap", address: process.env.APESWAP_FACTORY_ADDRESS?.trim() || "0xCf083Be4164828f00cAE704EC15a36D711491284" },
-  { name: "Dfyn", address: process.env.DFYN_FACTORY_ADDRESS?.trim() || "0xE7Fb3e833eFE5F9c441105EB65Ef8b261266423b" },
-];
-
-// keccak256("PairCreated(address,address,address,uint256)") — padrão Uniswap V2.
-const PAIR_CREATED_TOPIC = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9";
-
-function padAddress(addr: string): string {
-  const clean = addr.toLowerCase().replace(/^0x/, "");
-  return "0x" + clean.padStart(64, "0");
-}
-
-interface PolygonscanLog {
-  address: string;
-  topics: string[];
-  data: string;
-  transactionHash: string;
-  blockNumber: string;
-  timeStamp: string;
-  logIndex?: string;
-}
-
-interface PolygonscanTx {
-  from: string;
-  to: string;
-  hash: string;
-}
-
-async function fetchTxSender(txHash: string): Promise<string | null> {
-  try {
-    const result = await scanRequest({
-      module: "proxy",
-      action: "eth_getTransactionByHash",
-      txhash: txHash,
-    });
-    const tx = result as PolygonscanTx;
-    return tx?.from ?? null;
-  } catch (err) {
-    log("WARN", "fetchTxSender", "Falha ao buscar tx sender", { txHash: txHash.slice(0, 20), error: (err as Error).message });
-    return null;
-  }
-}
-
-async function fetchPoolCreators(tokenAddress: string): Promise<PoolCreatorInfo[]> {
-  const results: PoolCreatorInfo[] = [];
-  const paddedToken = padAddress(tokenAddress);
-  const dbPools = getAllPoolCreations();
-  const knownPairs = new Set(dbPools.map((p) => p.pair_address.toLowerCase()));
-
-  for (const factory of DEX_FACTORIES) {
-    const factoryLower = factory.address.toLowerCase();
-    const alreadySynced = dbPools.some(
-      (p) => p.factory_address.toLowerCase() === factoryLower,
-    );
-
-    if (alreadySynced) {
-      log("INFO", "fetchPoolCreators", `Factory ${factory.name} já sincronizada, pulando API`, { factory: factory.address });
-      continue;
-    }
-
-    log("INFO", "fetchPoolCreators", `Buscando PairCreated em ${factory.name}`, { factory: factory.address });
-
-    // PairCreated(token0 indexed, token1 indexed, pair, uint): CAS pode
-    // ocupar token0 (topic1) ou token1 (topic2); consulta ambos e mescla.
-    const logsByKey = new Map<string, PolygonscanLog>();
-    for (const topicParam of ["topic1", "topic2"] as const) {
-      try {
-        const raw = await scanRequest({
-          module: "logs",
-          action: "getLogs",
-          fromBlock: "0",
-          toBlock: "latest",
-          address: factory.address,
-          topic0: PAIR_CREATED_TOPIC,
-          [topicParam]: paddedToken,
-        });
-        for (const entry of raw as PolygonscanLog[]) {
-          logsByKey.set(`${entry.transactionHash}:${entry.logIndex ?? "0"}`, entry);
-        }
-      } catch (err) {
-        log("WARN", "fetchPoolCreators", `Falha ao buscar logs de ${factory.name}`, { topicParam, error: (err as Error).message });
-      }
-    }
-    const logs = [...logsByKey.values()];
-
-    if (logs.length === 0) {
-      log("INFO", "fetchPoolCreators", `Nenhum pool encontrado em ${factory.name}`);
-      continue;
-    }
-
-    log("OK", "fetchPoolCreators", `Pools encontrados em ${factory.name}`, { count: logs.length });
-
-    for (const logEntry of logs) {
-      // token0/topics[1] e token1/topics[2] são indexados; o endereço do
-      // pair não é indexado e vem na primeira word de `data`.
-      const token0 = "0x" + (logEntry.topics[1]?.slice(26) ?? "").toLowerCase();
-      const token1 = "0x" + (logEntry.topics[2]?.slice(26) ?? "").toLowerCase();
-      const pairAddress = "0x" + (logEntry.data?.slice(26, 66) ?? "").toLowerCase();
-
-      if (pairAddress.length !== 42) {
-        log("WARN", "fetchPoolCreators", "Log PairCreated sem pair válido em data", { txHash: logEntry.transactionHash.slice(0, 20) });
-        continue;
-      }
-
-      if (knownPairs.has(pairAddress)) continue;
-
-      const creator = await fetchTxSender(logEntry.transactionHash);
-      if (!creator) {
-        log("WARN", "fetchPoolCreators", "Não foi possível obter criador", { pairAddress, txHash: logEntry.transactionHash.slice(0, 20) });
-        continue;
-      }
-
-      const info: PoolCreatorInfo = {
-        pairAddress,
-        factoryAddress: factoryLower,
-        creatorAddress: creator.toLowerCase(),
-        token0,
-        token1,
-        txHash: logEntry.transactionHash.toLowerCase(),
-        blockNumber: parseInt(logEntry.blockNumber, 16),
-        timestamp: parseInt(logEntry.timeStamp, 16),
-        dexName: factory.name,
-      };
-
-      results.push(info);
-      knownPairs.add(pairAddress);
-
-      insertPoolCreation({
-        pair_address: info.pairAddress,
-        factory_address: info.factoryAddress,
-        creator_address: info.creatorAddress,
-        token0: info.token0,
-        token1: info.token1,
-        tx_hash: info.txHash,
-        block_number: info.blockNumber,
-        timestamp: info.timestamp,
-        dex_name: info.dexName,
-      });
-
-      upsertAddress(info.creatorAddress, `Pool Creator (${factory.name})`, "pool_creator", false);
-      upsertAddress(info.pairAddress, `${factory.name} LP Pair`, "lp", true);
-
-      log("OK", "fetchPoolCreators", "Pool registrado", {
-        dex: factory.name,
-        pair: pairAddress,
-        creator: creator.toLowerCase(),
-        block: info.blockNumber,
-      });
-    }
-  }
-
-  log("OK", "fetchPoolCreators", "Sincronização de pool creators concluída", { totalPools: results.length });
-  return results;
 }
 
 async function fetchAllTransfers(tokenAddress: string): Promise<TokenTransfer[]> {
@@ -1628,7 +1452,7 @@ async function main(): Promise<void> {
 
   if (!useDbOnly && process.env.POLYGONSCAN_API_KEY?.trim()) {
     try {
-      await fetchPoolCreators(tokenAddress);
+      await syncPoolCreators(tokenAddress);
     } catch (err) {
       log("WARN", "main", "Falha ao buscar pool creators (não bloqueia)", { error: (err as Error).message });
     }
