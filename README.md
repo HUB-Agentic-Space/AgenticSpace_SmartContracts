@@ -61,6 +61,18 @@ Para detalhes econômicos do token, consulte o [Tokenomics](../frontend/public/t
 | `GasPromotionFacet` | Promoções de gas sponsorship: ativar/desativar cobertura de gas por operação, budget, limite por usuário, relayer | `GasPromotionStorage` |
 | `PausableFacet` | Pausa/despausa o Diamond inteiro | `LibDiamond` |
 
+### Bridge Cross-Chain (LayerZero OFT)
+
+| Contrato | Descrição |
+|---|---|
+| `CASOFTAdapter` | Lock/unlock do CASToken (Polygon) — origem do bridge. `contracts/bridge/` |
+| `CASOFT` | Representação omnichain do CAS na BNB Chain (mint/burn via EndpointV2). `contracts/bridge/` |
+
+Fluxo operacional: `scripts/deploy/55` (adapter) → `56` (OFT + peers) →
+`57` (mint/bridge modular) → `58` (seed BinPool CAS/BNB PancakeSwap
+Infinity ao preço médio CAS/USD dos pools Polygon). Ver
+`docs/liquidity/pancakeswap-infinity-binpool-seed.md`.
+
 ### Faucet (Contratos Avulsos)
 
 | Contrato | Descrição |

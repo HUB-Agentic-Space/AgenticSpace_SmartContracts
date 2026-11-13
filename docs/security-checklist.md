@@ -133,6 +133,19 @@ Responsável: Devin. Escopo: revisão inicial de prontidão; **não é auditoria
 - [x] 2026-11-01 — Devin: **deploy e agendamento realizados em mainnet.** ClaimVaultFacet `0x58E60E16F7d20Fdd7F960e6680F3671B2a0b0f78` (tx `0xf328218a99b811a9ba50a36b09c4f220ac86b3bdd046ebe710a4113837c0a374`); ClaimNFTFacet `0xED8e0d8364509aaaC0d0197158E3908BDB8Ca45D` (tx `0xd16268d70e9973cd855e480f3a86dd02b23f79f12c604f764e907ffb268a2367`); deployer `0x66682BBeD9e540017967692cCdd069fE5F833888`. Safe execTransaction tx `0x97a9ca8f5c87288d031a6364b1eebd2ad9d5fa7c15a54e9fe195bcf828020178` (nonce 19). operationId `0x4aa51e471289c2631eabf59eef9236d31723a15ba98cf33ad844aab5a4fd357b`, readyAt `2026-11-03T23:45:57Z`. Payload em `deployments/claim-facets-cut.json`. Execução automática agendada via `agenticspace-claim-facets-execute.timer` (23:50 UTC, retry 15min) — o script `54_execute` remove as units ao concluir. Batch: diamondCut (35 seletores) + `initClaimVault(0x1cdF56D75d5F3643BecB1Cb2F96cbEC26a43c73c)` + `initClaimNFT("Rapport Claim","RCLAIM",baseURI)` + `setClaimAssetSupport(CAS 0x5151A34EaC7bA08cd6B540b32cD30316218A2287)`.
 - [ ] Pós-execução (após 2026-11-03): verificação no PolygonScan, registro no `ContractRegistry`, monitoramento e atualização backend/frontend com os endereços confirmados — **pendente até a execução do timelock**.
 
+### Pré-deploy — CASOFTAdapter / CASOFT (LayerZero OFT, 2026-11-13)
+
+Responsável: Devin. Escopo: revisão inicial de prontidão do par de contratos
+de bridge e dos scripts operacionais 55–58; **não é auditoria independente
+nem aprovação de mainnet**.
+
+- [x] 2026-11-13 — Devin: `contracts/bridge/CASOFTAdapter.sol` e `CASOFT.sol` são **wrappers mínimos** sobre `OFTAdapter`/`OFT` auditados da LayerZero (`@layerzerolabs/oft-evm@3.2.1`) — nenhuma lógica de negócio adicionada; `Ownable(_delegate)` inicializado no construtor por compatibilidade com OZ 5.x.
+- [x] 2026-11-13 — Devin: testes `test/bridge/CASOFT.test.ts` (7 casos, `EndpointV2Mock`): metadados/ownership, `setPeer` onlyOwner, `quoteSend`, send A→B (lock+mint 1:1), round-trip B→A (burn+unlock), revert com token pausado, revert sem peer configurado. **20/20 passando** junto com `binpool_math.test.ts`.
+- [x] 2026-11-13 — Devin: scripts com dry-run por padrão via flags dedicadas (`BRIDGE_EXECUTE`/`SEED_EXECUTE`) — o `DRY_RUN=false` global do `.env` não dispara execução acidental. Preflight fail-closed: supply cap, pausa, `MINTER_ROLE`, saldos, peer wiring e chainId explícitos (137 / 56 / 97).
+- [x] 2026-11-13 — Devin: `npm install` de dependências LZ revisado — `ethers@6.17.0` declarado explicitamente (versão 5.8.0 transitiva do `oapp-evm` fica aninhada); `ethers` do projeto não é alterado.
+- [x] 2026-11-13 — Devin: Solhint direcionado aos wrappers LZ sem erros/warnings (apenas rules desconhecidas na config, pre-existentes). Slither via `--compile-force-framework hardhat` (352 contratos, 102 detectores): **nenhum achado em `contracts/bridge/`**.
+- [ ] 2026-11-13 — Devin: verificação on-chain dos deploys reais (55/56) e do seed BinPool (58) — **pendente**; encoding `modifyLiquidities`/`BinAddLiquidityParams` validado contra `infinity-periphery-bsc-base`, mas execução real em mainnet ainda não ocorreu.
+
 ## Legenda
 
 - **[CRÍTICO]** pode causar perda de fundos, tomada do sistema ou fraude de identidade.
@@ -823,6 +836,7 @@ não como banco público de documentos pessoais.
 
 | Data | Responsável | Contratos revisados | Alterações |
 |------|------------|---------------------|------------|
+| 2026-11-13 | Devin | CASOFTAdapter, CASOFT (bridge LayerZero OFT) + scripts 55–58 | Wrappers mínimos sobre `oft-evm` auditado; 20 testes (OFT mock + binpool_math) passando; dry-run por padrão com flags dedicadas. Slither/auditoria externa **pendentes** antes de produção. |
 | 2026-09-19 | Devin | CASSwapUSDCPOLFacet, LibCASSwap, CASSwapStorage, ICASSwapUSDCPOL | Multi-ativo: BRLA + `swapExact`/`quoteSwap` genérico (12 direções, CAS pivot), `setAllSwapRatiosV2`, views `getCasRate`/`getReservesMulti`/`getBRLAToken`. 18 testes novos + 33 regressão passando. Slither/Mythril/Echidna **pendentes** antes do deploy do corte multi-ativo. |
 | 2026-09-17 | Devin | CASSwapUSDCPOLFacet, LibCASSwap, ICASSwapUSDCPOL, TraderGovernanceFacet | Fix da suíte CASSwap: 29 testes passando, colisão de seletores resolvida, slither direcionado sem HIGH/CRITICAL, Mythril sem achados. Echidna bloqueado por falta de Foundry no ambiente. |
 | 2026-08-24 | Devin | 8 contratos (EIP-8004 Trust Layer + EIP-8183 AgentCommerceFacet + x402 Facilitator) | Revisão manual + verificação da suíte de testes (`Eip8004Eip8183X402.test.ts`, 14 passing). Itens marcados em Controle de Acesso, Autenticação/Assinaturas (EIP-712), Reentrância/CEI e Privacidade. Slither/Mythril/Echidna **não executados** — pendência registrada para pré-mainnet. |

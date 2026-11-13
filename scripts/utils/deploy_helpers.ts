@@ -37,6 +37,8 @@ const NETWORK_INFO: Record<number, { name: string; type: string; nativeToken: st
   137:   { name: "Polygon PoS Mainnet", type: "Sidechain (separada da Ethereum)", nativeToken: "POL", isPolygonPoS: true },
   80002: { name: "Polygon Amoy Testnet", type: "Sidechain (separada da Ethereum)", nativeToken: "POL", isPolygonPoS: true },
   1:     { name: "Ethereum Mainnet", type: "L1", nativeToken: "ETH", isPolygonPoS: false },
+  56:    { name: "BNB Smart Chain Mainnet", type: "L1 (BSC)", nativeToken: "BNB", isPolygonPoS: false },
+  97:    { name: "BNB Smart Chain Testnet (Chapel)", type: "L1 (BSC testnet)", nativeToken: "tBNB", isPolygonPoS: false },
   31337: { name: "Hardhat Local", type: "Desenvolvimento local", nativeToken: "ETH (mock)", isPolygonPoS: false },
 };
 
