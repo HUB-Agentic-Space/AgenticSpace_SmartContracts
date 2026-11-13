@@ -10,7 +10,7 @@ import { ICASToken } from "../interfaces/ICASToken.sol";
 
 /**
  * @title CASToken
- * @dev CAS (Cryptocoin Agentic Space) — ERC-20 Adaptável (UUPS).
+ * @dev CAS (Criptocoin Agentic Space) — ERC-20 Adaptável (UUPS).
  *      Moeda interna do Agentic Space usada para:
  *      - Transações da DAO (propostas e votação)
  *      - Validação de agentes
@@ -39,17 +39,6 @@ contract CASToken is
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     bytes32 public constant RATIO_ADMIN_ROLE = keccak256("RATIO_ADMIN_ROLE");
-    bytes32 public constant COMPLIANCE_ROLE = keccak256("COMPLIANCE_ROLE");
-
-    /// @dev Mapping of frozen accounts (permanent or temporary).
-    mapping(address => bool) private _frozenAccounts;
-
-    /// @dev Mapping of freeze end timestamps (0 = permanent freeze).
-    mapping(address => uint256) private _freezeUntil;
-
-    /// @dev Global voting lock — when active, all transfers are blocked
-    ///      to prevent vote buying during arbitration voting period.
-    bool private _votingLockActive;
 
     /// @dev Supply máximo absoluto: 10,000,000 CAS (10M * 1e18).
     uint256 public constant MAX_SUPPLY = 10_000_000 * 1e18;
@@ -66,17 +55,10 @@ contract CASToken is
     error BurnExceedsBalance(uint256 balance, uint256 amount);
     error ZeroAmount();
     error MaxSupplyExceeded(uint256 currentSupply, uint256 amount, uint256 maxSupply);
-    error AccountFrozen(address account);
-    error FreezeUntilMustBeFuture(uint256 provided, uint256 current);
-    error CannotFreezeZeroAddress();
-    error VotingLockActive();
 
     event Minted(address indexed to, uint256 amount);
     event Burned(address indexed from, uint256 amount);
     event MaxSupplyAnnounced(uint256 maxSupply);
-    event Frozen(address indexed account, uint256 untilTime);
-    event Unfrozen(address indexed account);
-    event VotingLockStateChanged(bool active);
 
     // -----------------------------------------------------------------------
     // Initializer
@@ -86,7 +68,7 @@ contract CASToken is
      * @dev Inicializa o token CAS com admin e fornecimento inicial.
      * @param admin Endereço do administrador do token.
      * @param initialSupply Fornecimento inicial em wei (cunhado para o admin).
-     * @param name Nome do token ("Cryptocoin Agentic Space").
+     * @param name Nome do token ("Criptocoin Agentic Space").
      * @param symbol Símbolo do token ("CAS").
      */
     function initialize(
@@ -185,27 +167,7 @@ contract CASToken is
 
     function _update(address from, address to, uint256 value) internal override {
         if (paused()) revert EnforcedPause();
-
-        if (_votingLockActive && !hasRole(COMPLIANCE_ROLE, to)) revert VotingLockActive();
-
-        _autoUnfreezeIfNeeded(from);
-        _autoUnfreezeIfNeeded(to);
-
-        if (_frozenAccounts[from]) revert AccountFrozen(from);
-        if (_frozenAccounts[to]) revert AccountFrozen(to);
-
         super._update(from, to, value);
-    }
-
-    function _autoUnfreezeIfNeeded(address account) internal {
-        if (_frozenAccounts[account]) {
-            uint256 until = _freezeUntil[account];
-            if (until > 0 && block.timestamp >= until) {
-                _frozenAccounts[account] = false;
-                _freezeUntil[account] = 0;
-                emit Unfrozen(account);
-            }
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -235,60 +197,6 @@ contract CASToken is
     // -----------------------------------------------------------------------
     // UUPS authorization
     // -----------------------------------------------------------------------
-
-    // -----------------------------------------------------------------------
-    // Freeze / Unfreeze (COMPLIANCE_ROLE)
-    // -----------------------------------------------------------------------
-
-    function freeze(address account) external onlyRole(COMPLIANCE_ROLE) {
-        if (account == address(0)) revert CannotFreezeZeroAddress();
-        _frozenAccounts[account] = true;
-        _freezeUntil[account] = 0;
-        emit Frozen(account, 0);
-    }
-
-    function freezeUntil(address account, uint256 endTime) external onlyRole(COMPLIANCE_ROLE) {
-        if (account == address(0)) revert CannotFreezeZeroAddress();
-        if (endTime <= block.timestamp) revert FreezeUntilMustBeFuture(endTime, block.timestamp);
-        _frozenAccounts[account] = true;
-        _freezeUntil[account] = endTime;
-        emit Frozen(account, endTime);
-    }
-
-    function unfreeze(address account) external onlyRole(COMPLIANCE_ROLE) {
-        if (account == address(0)) revert CannotFreezeZeroAddress();
-        _frozenAccounts[account] = false;
-        _freezeUntil[account] = 0;
-        emit Unfrozen(account);
-    }
-
-    function isFrozen(address account) external view returns (bool) {
-        if (!_frozenAccounts[account]) return false;
-        uint256 until = _freezeUntil[account];
-        if (until > 0 && block.timestamp >= until) return false;
-        return true;
-    }
-
-    function freezeUntilOf(address account) external view returns (uint256) {
-        return _freezeUntil[account];
-    }
-
-    // -----------------------------------------------------------------------
-    // Voting Lock (called by ArbitrationFacet via Diamond)
-    // -----------------------------------------------------------------------
-
-    /// @dev Sets the global voting lock. When active, all CAS transfers are blocked.
-    ///      Only callable by COMPLIANCE_ROLE (ArbitrationFacet calls this via the Diamond's
-    ///      compliance officer, or the Diamond owner).
-    function setVotingLock(bool active) external onlyRole(COMPLIANCE_ROLE) {
-        _votingLockActive = active;
-        emit VotingLockStateChanged(active);
-    }
-
-    /// @dev Returns whether the voting lock is currently active.
-    function isVotingLockActive() external view returns (bool) {
-        return _votingLockActive;
-    }
 
     function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 }

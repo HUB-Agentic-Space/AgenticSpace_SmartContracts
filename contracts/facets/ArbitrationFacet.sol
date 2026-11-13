@@ -6,7 +6,7 @@ import { DiamondAccessControl } from "../diamond/access/DiamondAccessControl.sol
 import { ArbitrationStorage } from "../diamond/storage/ArbitrationStorage.sol";
 import { PaymentLib } from "../libs/PaymentLib.sol";
 import { VotingPowerLib } from "../libs/VotingPowerLib.sol";
-import { ICASToken } from "../interfaces/ICASToken.sol";
+import { ICASTokenCompliance } from "../interfaces/ICASTokenCompliance.sol";
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { ReentrancyGuardTransient } from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 
@@ -278,7 +278,7 @@ contract ArbitrationFacet is ReentrancyGuardTransient {
 
         address casTokenAddr = s.casToken;
         if (casTokenAddr == address(0)) revert CasTokenNotSet();
-        if (ICASToken(casTokenAddr).isFrozen(msg.sender)) revert NotAuthorized(msg.sender);
+        if (ICASTokenCompliance(casTokenAddr).isFrozen(msg.sender)) revert NotAuthorized(msg.sender);
 
         uint256 feeAmount = PaymentLib.processCustomFeePayment(msg.sender, PaymentLib.FEE_TYPE_ARBITRATION_VOTE);
         emit FeePaid(msg.sender, PaymentLib.FEE_TYPE_ARBITRATION_VOTE, feeAmount);
@@ -390,7 +390,7 @@ contract ArbitrationFacet is ReentrancyGuardTransient {
 
         address casTokenAddr = s.casToken;
         if (casTokenAddr == address(0)) revert CasTokenNotSet();
-        ICASToken casToken = ICASToken(casTokenAddr);
+        ICASTokenCompliance casToken = ICASTokenCompliance(casTokenAddr);
 
         uint256 freezeUntilTime = block.timestamp + s.retryFreezeDuration;
         for (uint256 i = 0; i < arbCase.accused.length; i++) {
@@ -747,7 +747,7 @@ contract ArbitrationFacet is ReentrancyGuardTransient {
             // Lock CAS token transfers to prevent vote buying
             address casTokenAddr = s.casToken;
             if (casTokenAddr != address(0)) {
-                ICASToken(casTokenAddr).setVotingLock(true);
+                ICASTokenCompliance(casTokenAddr).setVotingLock(true);
             }
         }
         emit VotingPeriodChanged(arbCase.caseId, uint8(ArbitrationStorage.VotingPeriod.Voting));
@@ -775,7 +775,7 @@ contract ArbitrationFacet is ReentrancyGuardTransient {
             // Unlock CAS token transfers
             address casTokenAddr = s.casToken;
             if (casTokenAddr != address(0)) {
-                ICASToken(casTokenAddr).setVotingLock(false);
+                ICASTokenCompliance(casTokenAddr).setVotingLock(false);
             }
         }
         emit VotingPeriodChanged(arbCase.caseId, uint8(ArbitrationStorage.VotingPeriod.Result));
@@ -795,7 +795,7 @@ contract ArbitrationFacet is ReentrancyGuardTransient {
 
         address casTokenAddr = s.casToken;
         if (casTokenAddr == address(0)) revert CasTokenNotSet();
-        ICASToken casToken = ICASToken(casTokenAddr);
+        ICASTokenCompliance casToken = ICASTokenCompliance(casTokenAddr);
 
         if (approved) {
             for (uint256 i = 0; i < arbCase.accused.length; i++) {

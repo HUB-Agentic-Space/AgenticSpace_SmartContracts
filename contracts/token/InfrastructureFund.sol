@@ -100,7 +100,7 @@ contract InfrastructureFund is
      * @dev Deposita tokens CAS no fundo via transferFrom.
      * @param amount Quantidade em wei.
      */
-    function depositCas(uint256 amount) external nonReentrant whenNotPaused {
+    function depositCas(uint256 amount) external whenNotPaused {
         if (amount == 0) revert ZeroAmount();
 
         casToken.safeTransferFrom(msg.sender, address(this), amount);

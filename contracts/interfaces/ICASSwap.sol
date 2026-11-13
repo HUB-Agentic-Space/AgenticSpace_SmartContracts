@@ -14,7 +14,6 @@ interface ICASSwap {
     event SwapFeeUpdated(uint256 oldFeeBps, uint256 newFeeBps);
     event CASDeposited(address indexed depositor, uint256 amount);
     event POLWithdrawn(address indexed to, uint256 amount);
-    event CASWithdrawn(address indexed to, uint256 amount);
     event PausedStateChanged(bool paused);
 
     function buyCAS(uint256 minCasOut, uint256 deadline) external payable returns (uint256 casReceived);
@@ -23,7 +22,6 @@ interface ICASSwap {
     function setSwapFee(uint256 feeBps) external;
     function depositCAS(uint256 amount) external;
     function withdrawPOL(uint256 amount) external;
-    function withdrawCAS(address to, uint256 amount) external;
     function pause() external;
     function unpause() external;
 

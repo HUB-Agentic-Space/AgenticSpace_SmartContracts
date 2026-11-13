@@ -7,7 +7,7 @@ import { DAOStorage } from "../diamond/storage/DAOStorage.sol";
 import { AgentStorage } from "../diamond/storage/AgentStorage.sol";
 import { VotingLib } from "../libs/VotingLib.sol";
 import { PaymentStorage } from "../diamond/storage/PaymentStorage.sol";
-import { ICASToken } from "../interfaces/ICASToken.sol";
+import { ICASTokenCompliance } from "../interfaces/ICASTokenCompliance.sol";
 
 /**
  * @title AgentDAOFacet
@@ -362,7 +362,7 @@ contract AgentDAOFacet {
     function _enforceNotFrozen(address account) internal view {
         address casTokenAddr = address(PaymentStorage.paymentStorage().casToken);
         if (casTokenAddr != address(0)) {
-            if (ICASToken(casTokenAddr).isFrozen(account)) revert AccountFrozen(account);
+            if (ICASTokenCompliance(casTokenAddr).isFrozen(account)) revert AccountFrozen(account);
         }
     }
 }

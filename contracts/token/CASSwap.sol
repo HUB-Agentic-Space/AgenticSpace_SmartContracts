@@ -260,29 +260,6 @@ contract CASSwap is
     }
 
     // -----------------------------------------------------------------------
-    // Admin: Withdraw CAS
-    // -----------------------------------------------------------------------
-
-    /**
-     * @dev Saca CAS excedente do swap contract para um endereço arbitrário.
-     *      Apenas DEFAULT_ADMIN_ROLE. Útil para redistribuição de tokens
-     *      acumulados no swap que não são necessários como liquidez.
-     * @param to Endereço de destino.
-     * @param amount Quantidade de CAS a sacar (em wei).
-     */
-    function withdrawCAS(address to, uint256 amount) external nonReentrant onlyRole(DEFAULT_ADMIN_ROLE) whenNotPaused {
-        if (to == address(0)) revert ZeroAddress();
-        if (amount == 0) revert ZeroAmount();
-
-        uint256 bal = casToken.balanceOf(address(this));
-        if (bal < amount) revert InsufficientCASBalance(bal, amount);
-
-        casToken.safeTransfer(to, amount);
-
-        emit CASWithdrawn(to, amount);
-    }
-
-    // -----------------------------------------------------------------------
     // Admin: Infrastructure Fund
     // -----------------------------------------------------------------------
 
