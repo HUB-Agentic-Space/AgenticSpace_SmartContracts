@@ -34,6 +34,24 @@ Para detalhes econômicos do token, consulte o [Tokenomics](../frontend/public/t
 - **Tooling**: Hardhat + Foundry + TypeChain + Slither + Solhint
 - **Padrão Proxy**: EIP-2535 Diamond (multi-facet proxy)
 
+## Linhas de desenvolvimento (CASv2 / CASv3)
+
+- **`release/cas-v2` (este branch)**: linha de **produção CAS V2.0**. Os
+  contratos da família do token (`contracts/token/`) e demais deploys
+  verificados estão **congelados** nas fontes verificadas no Polygonscan,
+  com paridade de bytecode comprovada on-chain
+  (`npm run check:frozen:onchain`). Inclui todo o material atual da
+  constelação — Diamond/facets, scripts, docs — mais a bridge LayerZero
+  OFT Polygon↔BSC e os scripts de liquidez (Uniswap V4, PancakeSwap
+  Infinity). Ver [docs/cas-v2-lineage.md](docs/cas-v2-lineage.md) e o
+  manifesto de congelamento em `docs/cas-v2/frozen-manifest.json`.
+- **`main`**: linha de desenvolvimento do **CASv3** — contém o
+  `CASToken.sol` V2.1 (freeze/COMPLIANCE_ROLE, impl dormente
+  `0xb6D08a85…83B8`) e recebe as melhorias aprovadas para a próxima
+  geração do token.
+- Specs que exigem as capacidades V2.1+ estão preservados em
+  `test-casv3-pending/` (não executados neste branch).
+
 ## Contratos
 
 ### Diamond (EIP-2535)

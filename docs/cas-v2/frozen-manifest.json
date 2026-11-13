@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Manifest de congelamento do branch release/cas-v2. Lista os arquivos Solidity que devem permanecer fiéis ao código em produção na Polygon PoS (chainId 137), com sha256 de referência. Validado por scripts/utils/check_frozen_contracts.ts (npm run check:frozen).",
+  "branch": "release/cas-v2",
+  "network": { "chainId": 137, "name": "polygon-pos" },
+  "policy": {
+    "scope": "Arquivos em contracts/token/** (família do token CAS) e demais contratos com deploy verificado em produção são congelados: alterações só podem ocorrer via processo de release CASv3 (branch main) e nunca diretamente neste branch.",
+    "interfaces": "contracts/interfaces/ICASToken.sol e contracts/interfaces/ICASSwap.sol foram restauradas às versões verificadas em produção (parte do bytecode/metadata dos bundles verificados). Capacidades V2.1+ de compliance ficam em contracts/interfaces/ICASTokenCompliance.sol.",
+    "parity": "bytecode-exact significa que o deployedBytecode compilado localmente difere do eth_getCode on-chain apenas nos slots do immutable __self (UUPSUpgradeable), que por definição contém o endereço do próprio contrato deployado."
+  },
+  "frozen_files": [
+    {
+      "path": "contracts/token/CASToken.sol",
+      "sha256": "54564de5fd35cc0ac1643b16bf05d05f1a64cc98a9051815b098afbd950ab7c3",
+      "contract": "CASToken",
+      "generation": "V2.0 (pré-freeze)",
+      "deployed": {
+        "address": "0x5151A34EaC7bA08cd6B540b32cD30316218A2287",
+        "proxy": "none (deploy standalone, sem proxy ERC1967 — não atualizável in-place)",
+        "verified": true,
+        "parity": "bytecode-exact"
+      },
+      "note": "Fonte restaurada da verificação Polygonscan — nunca havia sido versionada (entrou no git só em 49a7a4f já na variante V2.1 com freeze). O impl V2.1 (0xb6D08a85a0bA8ED374dFb4aE47285C90889683B8) está deployado porém dormente."
+    },
+    {
+      "path": "contracts/interfaces/ICASToken.sol",
+      "sha256": "cb2be1878a88d864def8f658fb1b00cdbdfbcbb63bae609d6609322552079618",
+      "contract": "ICASToken",
+      "deployed": {
+        "address": "0x5151A34EaC7bA08cd6B540b32cD30316218A2287",
+        "verified": true,
+        "parity": "metadata-hash do bundle CASToken depende deste arquivo"
+      },
+      "note": "Versão V2.0 verificada. As declarações V2.1+ (freeze/voting lock) vivem em ICASTokenCompliance.sol."
+    },
+    {
+      "path": "contracts/token/CASSwap.sol",
+      "sha256": "9f07c0094c27ae2d4a06579e6f068aa1d21494ef08843be060a08c3f66a01175",
+      "contract": "CASSwap",
+      "deployed": {
+        "address": "0x9399878Ce33EA9D4859ab708a111fB3f274BACF4",
+        "verified": true,
+        "parity": "bytecode-exact"
+      },
+      "note": "Versão de produção sem withdrawCAS (adicionado apenas na linha CASv3/main)."
+    },
+    {
+      "path": "contracts/interfaces/ICASSwap.sol",
+      "sha256": "2157b275ed3a5b0418dac8fd1da3ece94820dd167594e5441d100d8027f6b730",
+      "contract": "ICASSwap",
+      "deployed": {
+        "address": "0x9399878Ce33EA9D4859ab708a111fB3f274BACF4",
+        "verified": true,
+        "parity": "metadata-hash do bundle CASSwap depende deste arquivo"
+      },
+      "note": "Restaurada porque CASSwap herda concretamente a interface; sem withdrawCAS."
+    },
+    {
+      "path": "contracts/token/InfrastructureFund.sol",
+      "sha256": "97d734fc5e721387432c23ba037e41159003714c340ca25652726152f97ecb16",
+      "contract": "InfrastructureFund",
+      "deployed": {
+        "address": "0x190A9D2f206dbeb72Ce8b88Dc2603745fB5f50dB",
+        "verified": true,
+        "parity": "bytecode-exact"
+      }
+    },
+    {
+      "path": "contracts/diamond/Diamond.sol",
+      "sha256": "c6b032ab11c21201c34b4cd0f58d5c2427384b781ee6d0787114a477622b54cf",
+      "contract": "Diamond",
+      "deployed": {
+        "address": "0x80BD976cB588cD2F9aD9Ac671FB19174E9F3172b",
+        "verified": true,
+        "parity": "bytecode-exact"
+      }
+    },
+    {
+      "path": "contracts/token/LiquidityLock.sol",
+      "sha256": "380340caed444511d718c9c4a2704202a459fb581161a80aff6459a8ae125eae",
+      "contract": "LiquidityLock",
+      "deployed": {
+        "address": "0x42060386024b69F0365ae22a41501AdA2D53AA31",
+        "verified": false,
+        "parity": "source-presumed (contrato não verificado no Polygonscan — fidelidade não comprovável)"
+      }
+    },
+    {
+      "path": "contracts/token/FundTrackerToken.sol",
+      "sha256": "3dcd5574ae6e372465e8a1312b154d0d7a03e9e37999416526ae95e26e203478",
+      "contract": "FundTrackerToken",
+      "deployed": {
+        "address": "0xdF5Df5Eb32fa1a53749c66364B877C39b7031377",
+        "secondary_address": "0x5b82Fb12Cd034dAFC932ABb0995E9652EebE34CF",
+        "verified": false,
+        "parity": "source-presumed"
+      }
+    },
+    {
+      "path": "contracts/token/MultiTokenLiquidityLockFacet.sol",
+      "sha256": "21563aeb0e72abed817c91b4a7c51d02bd328dd16202f3f143f95faa9193bbe5",
+      "contract": "MultiTokenLiquidityLockFacet",
+      "deployed": {
+        "address": "0x64Dc5D98b68A09747920C9106E68aa9006bE2470",
+        "verified": false,
+        "parity": "source-presumed"
+      }
+    },
+    {
+      "path": "contracts/token/CASMigration.sol",
+      "sha256": "847cde7f525a6911f6d4e6a6e086dc5a948a4570fe0360b26883ebc8378ab4f9",
+      "contract": "CASMigration",
+      "deployed": {
+        "address": null,
+        "note": "Deploy registrado apenas na Amoy (0x8d9FCb22250F9fBaeE4D349C0109efd40a0A3ebe). Congelado por pertencer à família do token.",
+        "verified": false,
+        "parity": "source-presumed"
+      }
+    },
+    {
+      "path": "contracts/token/CASBatchTransfer.sol",
+      "sha256": "7a11ce8a81628fd796cb603bce763f5e98d7369fa94a63c34b46c505cfff4809",
+      "contract": "CASBatchTransfer",
+      "deployed": { "address": null, "verified": false, "parity": "source-presumed" }
+    },
+    {
+      "path": "contracts/token/BuybackBurn.sol",
+      "sha256": "9abb7c9317dae4f788166c9dfd1110b4901284d07a58248eb694223d726e5767",
+      "contract": "BuybackBurn",
+      "deployed": { "address": null, "verified": false, "parity": "source-presumed" }
+    }
+  ]
+}
