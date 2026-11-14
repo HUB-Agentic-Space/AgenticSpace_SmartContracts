@@ -52,9 +52,10 @@
  *   - SocialSentinel opcional (SOCIAL_SENTINEL_ENABLED=true + CONSENT=true).
  *
  * Abas do dashboard:
- *   - "🚨 Concentração & Gráficos": whales, métricas Gini/HHI/Top-N, pizzas de
- *     participação (holders % supply e movers % movimentações) e os gráficos
- *     de distribuição (donut, barras, Lorenz, atividade diária).
+ *   - "🚨 Concentração": whales, métricas Gini/HHI/Top-N e os gráficos de
+ *     distribuição normalizados em cards uniformes — pizzas de participação
+ *     (holders % supply e movers % movimentações), curva de Lorenz e
+ *     atividade diária.
  *   - "🕸️ Grafo 3D de Transferências": force-graph 3D inicializado sob demanda
  *     quando a aba fica visível (resiliente a falha do import do three.js).
  *   - "🚨 Manipulação": cada linha tem painel de tooltip com detalhes do sinal.
@@ -1202,12 +1203,6 @@ function escapeHtml(text: string): string {
 function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marketData: MarketData, transfers: TokenTransfer[], signals: ManipulationSignal[], socialSnapshot: SentimentSnapshot | null, periodLabel?: string): string {
   const labels = knownLabels();
   const topN = metrics.holders.slice(0, 20);
-  const othersPct = Math.max(0, 100 - topN.reduce((s, h) => s + h.pct, 0));
-
-  const donutLabels = [...topN.map((h) => h.label || shortAddr(h.address)), "Outros"];
-  const donutData = [...topN.map((h) => Math.round(h.pct * 100) / 100), Math.round(othersPct * 100) / 100];
-  const donutObs = [...topN.map((h) => h.observation || ""), ""];
-  const barObs = topN.map((h) => h.observation || "");
 
   // ── CAS partners from airdrop / distribution CSV ──
   const bestPriceUsd = marketData.bestPair?.priceUsd ?? 0;
@@ -1665,10 +1660,8 @@ ${GRAPH_3D_CDN}
   .graph-legend { display:flex; gap:20px; margin-top:12px; flex-wrap:wrap; font-size:.85rem; color:var(--muted); }
   .graph-legend span { display:flex; align-items:center; gap:6px; }
   .graph-legend .dot { width:12px; height:12px; border-radius:50%; display:inline-block; }
-  .pie-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:16px; }
-  .pie-wrap { position:relative; height:400px; }
-  .pie-wrap canvas { max-height:none; }
-  .pie-title { color:var(--blue); font-size:.95rem; margin-bottom:8px; }
+  .chart-wrap { position:relative; height:400px; }
+  .chart-wrap canvas { max-height:none; }
   .term { cursor:help; text-decoration:underline dotted; }
   ${GRAPH_3D_CSS}
   .graph-search-bar { display:flex; gap:8px; align-items:center; margin-bottom:12px; }
@@ -1720,7 +1713,7 @@ ${GRAPH_3D_CDN}
 <div class="tabs-bar">
   <button class="tab-btn active" onclick="switchTab(event,'tab-overview')">📋 Visão Geral</button>
   <button class="tab-btn" onclick="switchTab(event,'tab-market')">💰 Mercado</button>
-  <button class="tab-btn" onclick="switchTab(event,'tab-concentration')">🚨 Concentração &amp; Gráficos</button>
+  <button class="tab-btn" onclick="switchTab(event,'tab-concentration')">🚨 Concentração</button>
   <button class="tab-btn" onclick="switchTab(event,'tab-candlestick')">🕯️ Candlesticks</button>
   <button class="tab-btn" onclick="switchTab(event,'tab-holders')">🏆 Holders</button>
   <button class="tab-btn" onclick="switchTab(event,'tab-partners')">🤝 Parceiros</button>
@@ -1779,25 +1772,12 @@ ${GRAPH_3D_CDN}
     <p style="margin-top:6px"><strong><span class="term-tip" data-tip="Herfindahl-Hirschman Index — soma dos quadrados das participações percentuais (0–10000). Abaixo de 1500 = competitivo; acima de 2500 = altamente concentrado. Usado por reguladores para avaliar monopólio.">HHI</span>:</strong> ${fmt(metrics.hhi, 0)} (0–10000; &lt;1500 = competitivo, &gt;2500 = altamente concentrado)</p>
     <p style="margin-top:6px"><strong>Top 1:</strong> ${metrics.top1Pct.toFixed(2)}% · <strong>Top 5:</strong> ${metrics.top5Pct.toFixed(2)}% · <strong>Top 10:</strong> ${metrics.top10Pct.toFixed(2)}%</p>
   </div>
-  <div class="card full" style="margin-top:16px">
-    <h3 style="margin-top:0">🥧 Participação por conta — passe o mouse nas fatias para detalhes</h3>
-    <div class="pie-grid">
-      <div>
-        <h3 class="pie-title">Holders por saldo (% do supply)</h3>
-        <div class="pie-wrap"><canvas id="pie-holders"></canvas></div>
-      </div>
-      <div>
-        <h3 class="pie-title">Maiores movimentadores (% das movimentações)</h3>
-        <div class="pie-wrap"><canvas id="pie-movers"></canvas></div>
-      </div>
-    </div>
-  </div>
-  <h2 style="margin-top:28px">📊 Gráficos de Distribuição</h2>
+  <h2 style="margin-top:28px">📊 Distribuição &amp; Atividade — passe o mouse nas fatias para detalhes</h2>
   <div class="grid">
-    <div class="card"><h3>Distribuição do Supply (Top 20 + Outros)</h3><canvas id="donut"></canvas></div>
-    <div class="card"><h3>Top 20 Holders (% do supply)</h3><canvas id="bars"></canvas></div>
-    <div class="card"><h3>Curva de <span class="term-tip" data-tip="Curva de Lorenz — visualiza a distribuição acumulada de riqueza. A distância entre a curva e a linha diagonal de igualdade perfeita indica o nível de concentração. Quanto maior a área entre as duas, maior a desigualdade.">Lorenz</span> (concentração)</h3><canvas id="lorenz"></canvas></div>
-    <div class="card"><h3>Atividade Diária (transferências e volume)</h3><canvas id="activity"></canvas></div>
+    <div class="card"><h3>Holders por saldo (% do supply)</h3><div class="chart-wrap"><canvas id="pie-holders"></canvas></div></div>
+    <div class="card"><h3>Maiores movimentadores (% das movimentações)</h3><div class="chart-wrap"><canvas id="pie-movers"></canvas></div></div>
+    <div class="card"><h3>Curva de <span class="term-tip" data-tip="Curva de Lorenz — visualiza a distribuição acumulada de riqueza. A distância entre a curva e a linha diagonal de igualdade perfeita indica o nível de concentração. Quanto maior a área entre as duas, maior a desigualdade.">Lorenz</span> (concentração)</h3><div class="chart-wrap"><canvas id="lorenz"></canvas></div></div>
+    <div class="card"><h3>Atividade Diária (transferências e volume)</h3><div class="chart-wrap"><canvas id="activity"></canvas></div></div>
   </div>
 </div>
 
@@ -1949,7 +1929,7 @@ ${GRAPH_3D_CDN}
     <p style="color:var(--muted);font-size:.85rem;margin-bottom:16px">Selecione as abas para incluir:</p>
     <label><input type="checkbox" class="print-tab-cb" value="tab-overview" checked> 📋 Visão Geral</label>
     <label><input type="checkbox" class="print-tab-cb" value="tab-market" checked> 💰 Mercado</label>
-    <label><input type="checkbox" class="print-tab-cb" value="tab-concentration" checked> 🚨 Concentração &amp; Gráficos</label>
+    <label><input type="checkbox" class="print-tab-cb" value="tab-concentration" checked> 🚨 Concentração</label>
     <label><input type="checkbox" class="print-tab-cb" value="tab-candlestick" checked> 🕯️ Candlesticks</label>
     <label><input type="checkbox" class="print-tab-cb" value="tab-holders" checked> 🏆 Holders</label>
     <label><input type="checkbox" class="print-tab-cb" value="tab-partners" checked> 🤝 Parceiros</label>
@@ -1964,13 +1944,6 @@ ${GRAPH_3D_CDN}
 </div>
 
 <script>
-const donutLabels = ${JSON.stringify(donutLabels)};
-const donutData = ${JSON.stringify(donutData)};
-const barLabels = ${JSON.stringify(topN.map((h) => h.label || shortAddr(h.address)))};
-const barData = ${JSON.stringify(topN.map((h) => Math.round(h.pct * 100) / 100))};
-const barColors = ${JSON.stringify(topN.map((h) => (h.pct > 30 ? "#eb3812" : h.isContractLike ? "#cc7501" : "#F05F40")))};
-const donutObs = ${JSON.stringify(donutObs)};
-const barObs = ${JSON.stringify(barObs)};
 const lorenzData = ${JSON.stringify(lorenz.map((p) => ({ x: Math.round(p.x * 100) / 100, y: Math.round(p.y * 100) / 100 })))};
 const dailyLabels = ${JSON.stringify(metrics.dailySeries.map((d) => d.date))};
 const dailyCounts = ${JSON.stringify(metrics.dailySeries.map((d) => d.count))};
@@ -1983,7 +1956,7 @@ const manipTooltips = ${manipTooltipsJson};
 // por mensagem de fallback sem quebrar o restante do <script> (grafo 3D,
 // tooltips e abas continuam funcionais).
 if (typeof Chart === "undefined") {
-  ["donut","bars","lorenz","activity","candle30m","candle8h","candleDaily"].forEach(function(id) {
+  ["pie-holders","pie-movers","lorenz","activity","candle30m","candle8h","candleDaily"].forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.outerHTML = "<p style='color:#f7d4ca;font-size:.85rem;padding:12px;'>Chart.js indisponível — verifique a conexão com o CDN e recarregue.</p>";
   });
@@ -1991,31 +1964,6 @@ if (typeof Chart === "undefined") {
 if (typeof Chart !== "undefined") {
 Chart.defaults.color = "#f7d4ca";
 Chart.defaults.borderColor = "rgba(255,255,255,0.15)";
-const palette = ["#F05F40","#fcc650","#cc7501","#eb3812","#ce6e6d","#f7d4ca","#d4502e","#b5651d",
-                 "#fdd97a","#d9908f","#fae5df","#ff7a5c","#e89642","#ffd98a","#f54020","#c43d18",
-                 "#8a3a2c","#5d3a32","#eb6b4a","#e07a3a","#d49a5a"];
-
-new Chart(document.getElementById("donut"), {
-  type: "doughnut",
-  data: { labels: donutLabels, datasets: [{ data: donutData, backgroundColor: palette, borderWidth: 1, borderColor: "#712d23" }] },
-  options: { plugins: { legend: { position: "right", labels: { font: { size: 10 } } },
-    tooltip: { callbacks: { label: (c) => {
-      const obs = donutObs[c.dataIndex] || "";
-      return obs ? c.label + ": " + c.parsed + "% — " + obs : c.label + ": " + c.parsed + "%";
-    } } } } }
-});
-
-new Chart(document.getElementById("bars"), {
-  type: "bar",
-  data: { labels: barLabels, datasets: [{ label: "% do supply", data: barData, backgroundColor: barColors }] },
-  options: { indexAxis: "y", scales: { x: { title: { display: true, text: "% do supply" } } },
-    plugins: { legend: { display: false },
-      annotation: undefined,
-      tooltip: { callbacks: { label: (c) => {
-        const obs = barObs[c.dataIndex] || "";
-        return obs ? c.parsed.x + "% do supply — " + obs : c.parsed.x + "% do supply";
-      } } } } }
-});
 
 new Chart(document.getElementById("lorenz"), {
   type: "line",
@@ -2023,7 +1971,7 @@ new Chart(document.getElementById("lorenz"), {
     { label: "Lorenz (CAS)", data: lorenzData, borderColor: "#F05F40", backgroundColor: "rgba(240,95,64,.15)", fill: true, pointRadius: 0, tension: .2 },
     { label: "Igualdade perfeita", data: [{x:0,y:0},{x:100,y:100}], borderColor: "#712d23", borderDash: [6,4], pointRadius: 0 }
   ]},
-  options: { scales: {
+  options: { maintainAspectRatio: false, scales: {
       x: { type: "linear", min: 0, max: 100, title: { display: true, text: "% de holders (acumulado)" } },
       y: { min: 0, max: 100, title: { display: true, text: "% do supply (acumulado)" } } } }
 });
@@ -2033,7 +1981,7 @@ new Chart(document.getElementById("activity"), {
     { type: "bar", label: "Transferências", data: dailyCounts, backgroundColor: "#cc7501", yAxisID: "y" },
     { type: "line", label: "Volume (CAS)", data: dailyVolumes, borderColor: "#fcc650", yAxisID: "y1", tension: .3, pointRadius: 2 }
   ]},
-  options: { scales: {
+  options: { maintainAspectRatio: false, scales: {
       y: { position: "left", title: { display: true, text: "Transferências" } },
       y1: { position: "right", grid: { drawOnChartArea: false }, title: { display: true, text: "Volume CAS" } } } }
 });
