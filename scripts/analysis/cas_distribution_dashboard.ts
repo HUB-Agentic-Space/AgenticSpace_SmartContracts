@@ -51,9 +51,22 @@
  *   - aba "🚨 Manipulação" no HTML + JSON cas_manipulation_signals_*.json;
  *   - SocialSentinel opcional (SOCIAL_SENTINEL_ENABLED=true + CONSENT=true).
  *
+ * Abas do dashboard:
+ *   - "🚨 Concentração & Gráficos": whales, métricas Gini/HHI/Top-N, pizzas de
+ *     participação (holders % supply e movers % movimentações) e os gráficos
+ *     de distribuição (donut, barras, Lorenz, atividade diária).
+ *   - "🕸️ Grafo 3D de Transferências": force-graph 3D inicializado sob demanda
+ *     quando a aba fica visível (resiliente a falha do import do three.js).
+ *   - "🚨 Manipulação": cada linha tem painel de tooltip com detalhes do sinal.
+ *   - "🤖 Análise IA": conteúdo gerado via scripts/utils/genai_client.ts —
+ *     OpenRouter (AI_MODEL ou cadeia de modelos free atuais) e, ao primeiro
+ *     erro de crédito/quota, fallback para Ollama local com o melhor modelo
+ *     instalado primeiro (OLLAMA_MODEL/OLLAMA_BASE_URL/OLLAMA_URL).
+ *
  * Requisitos de ambiente:
  *   smartcontracts/.env : POLYGONSCAN_API_KEY, CAS_TOKEN_ADDRESS (+ labels)
- *   backend/.env        : AI_API_KEY, AI_MODEL (OpenRouter)
+ *   backend/.env        : AI_API_KEY, AI_MODEL (OpenRouter),
+ *                         OLLAMA_MODEL, OLLAMA_BASE_URL ou OLLAMA_URL (fallback local)
  */
 
 import { formatUnits } from "agentic_space_commons";
@@ -90,6 +103,17 @@ import {
   GRAPH_3D_INIT_JS,
   GRAPH_3D_SEARCH_JS,
 } from "../utils/3d_graph_render";
+import {
+  MANIP_TOOLTIP_BIND_JS,
+  PIE_CHARTS_JS,
+  alertColor,
+  buildPieData,
+  manipulationSignalTooltip,
+  safeJsonForScript,
+  severityToPct,
+  type PieAlert,
+} from "../utils/cas_report_charts";
+import { generateCompletion } from "../utils/genai_client";
 
 // ── Env loading ───────────────────────────────────────────────────────
 
@@ -1093,16 +1117,9 @@ function computeMetrics(transfers: TokenTransfer[], totalSupply: bigint): Metric
   };
 }
 
-// ── GenAI (OpenRouter) ────────────────────────────────────────────────
+// ── GenAI (OpenRouter → Ollama local) ─────────────────────────────────
 
 async function generateAiAnalysis(metrics: Metrics, marketData: MarketData): Promise<string> {
-  const apiKey = process.env.AI_API_KEY?.trim();
-  const model = process.env.AI_MODEL?.trim();
-  if (!apiKey || !model) {
-    log("WARN", "generateAiAnalysis", "AI_API_KEY/AI_MODEL ausentes; pulando análise GenAI");
-    return "<p><em>Análise GenAI indisponível: configure AI_API_KEY e AI_MODEL em backend/.env.</em></p>";
-  }
-
   const topSummary = metrics.holders.slice(0, 15).map((h, i) => ({
     rank: i + 1,
     address: h.address,
@@ -1144,52 +1161,23 @@ Produza em português, formato HTML simples (apenas <h3>, <p>, <ul>, <li>, <stro
 4. <h3>Leitura para Traders/Investidores</h3> — o que um operador deve observar antes de operar CAS.
 Seja específico com os números fornecidos.`;
 
-  const FALLBACK_MODELS = [
-    "google/gemini-2.5-flash-lite",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "google/gemma-3-27b-it:free",
-    "deepseek/deepseek-r1:free",
-    "meta-llama/llama-3.2-3b-instruct:free",
-  ];
-  const modelsToTry = [model, ...FALLBACK_MODELS.filter((m) => m !== model)];
+  // Cadeia compartilhada: AI_MODEL → modelos :free do catálogo → Ollama
+  // local (melhor modelo primeiro) ao primeiro erro de crédito/cota.
+  const result = await generateCompletion({
+    prompt,
+    maxTokens: 1000,
+    temperature: 0.3,
+    title: "CAS Distribution Dashboard",
+    log,
+  });
 
-  for (const tryModel of modelsToTry) {
-    log("INFO", "generateAiAnalysis", "Chamando OpenRouter", { model: tryModel });
-    try {
-      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": "https://agenticspace.rapport.tec.br",
-          "X-Title": "CAS Distribution Dashboard",
-        },
-        body: JSON.stringify({
-          model: tryModel,
-          messages: [{ role: "user", content: prompt }],
-          temperature: 0.3,
-          max_tokens: 1000,
-        }),
-      });
-      if (!res.ok) {
-        const errBody = await res.text();
-        throw new Error(`HTTP ${res.status}: ${errBody.slice(0, 200)}`);
-      }
-      const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-      const content = data.choices?.[0]?.message?.content?.trim();
-      if (!content) throw new Error("Resposta vazia do modelo");
-      log("OK", "generateAiAnalysis", "Análise GenAI recebida", { model: tryModel, chars: content.length });
-      return content.replace(/```html?|```/g, "");
-    } catch (err) {
-      log("WARN", "generateAiAnalysis", "Modelo falhou, tentando próximo", {
-        model: tryModel,
-        error: (err as Error).message,
-      });
-    }
+  if (result) {
+    const providerLabel = result.provider === "ollama" ? "Ollama (local)" : "OpenRouter";
+    return `<p style="font-size:.75rem;color:var(--muted);margin-bottom:12px;">Gerado por <strong>${providerLabel}</strong> · modelo <code>${result.model}</code></p>${result.content}`;
   }
 
-  log("ERROR", "generateAiAnalysis", "Todos os modelos falharam");
-  return `<p><em>Falha ao gerar análise GenAI após tentar ${modelsToTry.length} modelos. Verifique AI_API_KEY e créditos no OpenRouter.</em></p>`;
+  log("ERROR", "generateAiAnalysis", "Todos os provedores GenAI falharam");
+  return "<p><em>Falha ao gerar análise GenAI: OpenRouter indisponível e nenhum modelo local do Ollama respondeu. Verifique AI_API_KEY/créditos ou rode <code>ollama pull &lt;modelo&gt;</code>.</em></p>";
 }
 
 // ── HTML dashboard ────────────────────────────────────────────────────
@@ -1495,7 +1483,57 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marke
       return { from, to, value: edge.count, title: tooltip, width, color: edgeColor, highlight: edgeHighlight, volumeLabel };
     });
 
-  const graphDataJson = JSON.stringify({ nodes: graphNodes, edges: graphEdges });
+  const graphDataJson = safeJsonForScript({ nodes: graphNodes, edges: graphEdges });
+
+  // ── Pizzas de distribuição (compartilhadas com cas_graph_dashboard) ──
+  const anonNames = new Map<string, string>();
+  const anonFor = (addr: string): string | undefined => {
+    if (!anonMode) return undefined;
+    const lower = addr.toLowerCase();
+    if (!anonNames.has(lower)) anonNames.set(lower, `Anon ${anonNames.size + 1}`);
+    return anonNames.get(lower);
+  };
+
+  // Alertas por endereço para as fatias da pizza (score heurístico, sem GNN)
+  const nodeAlertMap = new Map<string, PieAlert[]>();
+  for (const s of signals) {
+    const alert: PieAlert = {
+      type: s.type,
+      severity: s.severity,
+      evidence: s.evidence,
+      addresses: s.addresses,
+      heuristicScore: severityToPct(s.severity),
+      gnnScore: 0,
+      combinedScore: severityToPct(s.severity),
+    };
+    for (const addr of s.addresses) {
+      const key = addr.toLowerCase();
+      const list = nodeAlertMap.get(key) ?? [];
+      list.push(alert);
+      nodeAlertMap.set(key, list);
+    }
+  }
+
+  const totalMovements = [...nodeStats.entries()]
+    .filter(([addr]) => addr !== ZERO)
+    .reduce((s, [, st]) => s + st.sent + st.received, 0);
+
+  const pieData = buildPieData(
+    transfers,
+    metrics.holders,
+    nodeStats,
+    labels,
+    anonFor,
+    nodeAlertMap,
+    holderBalanceMap,
+    totalMovements,
+  );
+  const pieDataJson = safeJsonForScript(pieData);
+
+  // ── Tooltips por linha da tabela de sinais de manipulação ──
+  const manipTooltipsJson = safeJsonForScript(
+    signals.map((s) => manipulationSignalTooltip(s, labels, anonFor)),
+  );
 
   // ── OHLC candlestick data (3 intervals: 30min, 8h, daily) ──
   const refPriceUsd = marketData.bestPair?.priceUsd ?? 0;
@@ -1627,6 +1665,11 @@ ${GRAPH_3D_CDN}
   .graph-legend { display:flex; gap:20px; margin-top:12px; flex-wrap:wrap; font-size:.85rem; color:var(--muted); }
   .graph-legend span { display:flex; align-items:center; gap:6px; }
   .graph-legend .dot { width:12px; height:12px; border-radius:50%; display:inline-block; }
+  .pie-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:16px; }
+  .pie-wrap { position:relative; height:400px; }
+  .pie-wrap canvas { max-height:none; }
+  .pie-title { color:var(--blue); font-size:.95rem; margin-bottom:8px; }
+  .term { cursor:help; text-decoration:underline dotted; }
   ${GRAPH_3D_CSS}
   .graph-search-bar { display:flex; gap:8px; align-items:center; margin-bottom:12px; }
   .graph-search-bar input { flex:1; padding:8px 14px; border-radius:8px; border:1px solid var(--border); background:rgba(255,255,255,0.05); color:var(--text); font-size:.9rem; outline:none; }
@@ -1677,8 +1720,7 @@ ${GRAPH_3D_CDN}
 <div class="tabs-bar">
   <button class="tab-btn active" onclick="switchTab(event,'tab-overview')">📋 Visão Geral</button>
   <button class="tab-btn" onclick="switchTab(event,'tab-market')">💰 Mercado</button>
-  <button class="tab-btn" onclick="switchTab(event,'tab-concentration')">🚨 Concentração</button>
-  <button class="tab-btn" onclick="switchTab(event,'tab-charts')">📊 Gráficos</button>
+  <button class="tab-btn" onclick="switchTab(event,'tab-concentration')">🚨 Concentração &amp; Gráficos</button>
   <button class="tab-btn" onclick="switchTab(event,'tab-candlestick')">🕯️ Candlesticks</button>
   <button class="tab-btn" onclick="switchTab(event,'tab-holders')">🏆 Holders</button>
   <button class="tab-btn" onclick="switchTab(event,'tab-partners')">🤝 Parceiros</button>
@@ -1737,10 +1779,20 @@ ${GRAPH_3D_CDN}
     <p style="margin-top:6px"><strong><span class="term-tip" data-tip="Herfindahl-Hirschman Index — soma dos quadrados das participações percentuais (0–10000). Abaixo de 1500 = competitivo; acima de 2500 = altamente concentrado. Usado por reguladores para avaliar monopólio.">HHI</span>:</strong> ${fmt(metrics.hhi, 0)} (0–10000; &lt;1500 = competitivo, &gt;2500 = altamente concentrado)</p>
     <p style="margin-top:6px"><strong>Top 1:</strong> ${metrics.top1Pct.toFixed(2)}% · <strong>Top 5:</strong> ${metrics.top5Pct.toFixed(2)}% · <strong>Top 10:</strong> ${metrics.top10Pct.toFixed(2)}%</p>
   </div>
-</div>
-
-<div id="tab-charts" class="tab-panel">
-  <h2>📊 Gráficos de Distribuição</h2>
+  <div class="card full" style="margin-top:16px">
+    <h3 style="margin-top:0">🥧 Participação por conta — passe o mouse nas fatias para detalhes</h3>
+    <div class="pie-grid">
+      <div>
+        <h3 class="pie-title">Holders por saldo (% do supply)</h3>
+        <div class="pie-wrap"><canvas id="pie-holders"></canvas></div>
+      </div>
+      <div>
+        <h3 class="pie-title">Maiores movimentadores (% das movimentações)</h3>
+        <div class="pie-wrap"><canvas id="pie-movers"></canvas></div>
+      </div>
+    </div>
+  </div>
+  <h2 style="margin-top:28px">📊 Gráficos de Distribuição</h2>
   <div class="grid">
     <div class="card"><h3>Distribuição do Supply (Top 20 + Outros)</h3><canvas id="donut"></canvas></div>
     <div class="card"><h3>Top 20 Holders (% do supply)</h3><canvas id="bars"></canvas></div>
@@ -1861,10 +1913,10 @@ ${GRAPH_3D_CDN}
     <div class="kpi"><div class="v">${socialSnapshot ? (socialSnapshot.negativeScore * 100).toFixed(0) + "%" : "—"}</div><div class="l">Negatividade social</div></div>
   </div>
   <div class="card full">
-    <h3>Sinais detectados</h3>
+    <h3>Sinais detectados <span style="font-weight:400;font-size:.8rem;color:var(--muted);">— passe o mouse sobre uma linha para ver o painel de detalhes</span></h3>
     <table id="manipulation-table" class="sortable">
       <thead><tr><th>Tipo</th><th>Severidade</th><th>Início</th><th>Fim</th><th>Endereços</th><th>Volume (CAS)</th><th>Txs</th><th>Evidência</th></tr></thead>
-      <tbody>${signals.length ? signals.map((s) => `<tr class="${s.severity === "ALTO" ? "alert-row" : ""}">
+      <tbody>${signals.length ? signals.map((s, sIdx) => `<tr class="${s.severity === "ALTO" ? "alert-row" : ""}" data-manip-idx="${sIdx}" style="cursor:help;">
         <td>${s.type}</td>
         <td>${s.severity}</td>
         <td>${s.start ? new Date(s.start * 1000).toLocaleString("pt-BR", { timeZone: "UTC" }) : "—"}</td>
@@ -1872,7 +1924,7 @@ ${GRAPH_3D_CDN}
         <td>${s.addresses.slice(0, 3).map((a) => polyScanLink(a, shortAddr(a))).join(", ")}${s.addresses.length > 3 ? ` +${s.addresses.length - 3}` : ""}</td>
         <td data-sort="${s.volumeCas}">${fmt(s.volumeCas)}</td>
         <td>${s.txCount}</td>
-        <td style="font-size:.8rem;max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${s.evidence.replace(/"/g, "&quot;")}">${s.evidence}</td>
+        <td style="font-size:.8rem;max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(s.evidence)}">${escapeHtml(s.evidence)}</td>
       </tr>`).join("") : `<tr><td colspan="8" style="text-align:center;color:#F05F40">Nenhum sinal detectado</td></tr>`}</tbody>
     </table>
   </div>
@@ -1897,8 +1949,7 @@ ${GRAPH_3D_CDN}
     <p style="color:var(--muted);font-size:.85rem;margin-bottom:16px">Selecione as abas para incluir:</p>
     <label><input type="checkbox" class="print-tab-cb" value="tab-overview" checked> 📋 Visão Geral</label>
     <label><input type="checkbox" class="print-tab-cb" value="tab-market" checked> 💰 Mercado</label>
-    <label><input type="checkbox" class="print-tab-cb" value="tab-concentration" checked> 🚨 Concentração</label>
-    <label><input type="checkbox" class="print-tab-cb" value="tab-charts" checked> 📊 Gráficos</label>
+    <label><input type="checkbox" class="print-tab-cb" value="tab-concentration" checked> 🚨 Concentração &amp; Gráficos</label>
     <label><input type="checkbox" class="print-tab-cb" value="tab-candlestick" checked> 🕯️ Candlesticks</label>
     <label><input type="checkbox" class="print-tab-cb" value="tab-holders" checked> 🏆 Holders</label>
     <label><input type="checkbox" class="print-tab-cb" value="tab-partners" checked> 🤝 Parceiros</label>
@@ -1925,7 +1976,19 @@ const dailyLabels = ${JSON.stringify(metrics.dailySeries.map((d) => d.date))};
 const dailyCounts = ${JSON.stringify(metrics.dailySeries.map((d) => d.count))};
 const dailyVolumes = ${JSON.stringify(metrics.dailySeries.map((d) => d.volume))};
 const graphData = ${graphDataJson};
+const pieData = ${pieDataJson};
+const manipTooltips = ${manipTooltipsJson};
 
+// Chart.js indisponível (CDN offline/bloqueado): substitui cada canvas
+// por mensagem de fallback sem quebrar o restante do <script> (grafo 3D,
+// tooltips e abas continuam funcionais).
+if (typeof Chart === "undefined") {
+  ["donut","bars","lorenz","activity","candle30m","candle8h","candleDaily"].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.outerHTML = "<p style='color:#f7d4ca;font-size:.85rem;padding:12px;'>Chart.js indisponível — verifique a conexão com o CDN e recarregue.</p>";
+  });
+}
+if (typeof Chart !== "undefined") {
 Chart.defaults.color = "#f7d4ca";
 Chart.defaults.borderColor = "rgba(255,255,255,0.15)";
 const palette = ["#F05F40","#fcc650","#cc7501","#eb3812","#ce6e6d","#f7d4ca","#d4502e","#b5651d",
@@ -2090,6 +2153,7 @@ function makeCandleChart(canvasId, data, yLabel) {
 makeCandleChart("candle30m", candle30mData, "Volume CAS (OHLC)");
 makeCandleChart("candle8h", candle8hData, "Volume CAS (OHLC)");
 makeCandleChart("candleDaily", candleDailyData, "Volume CAS (OHLC)");
+} // end if (typeof Chart !== "undefined")
 
 // ── Tab switching ──
 // _graph3d and _graph3dData are declared by GRAPH_3D_INIT_JS below
@@ -2112,6 +2176,9 @@ function switchTab(evt, tabId) {
   document.getElementById(tabId).classList.add('active');
   if (tabId === 'tab-graph') {
     setTimeout(() => {
+      // Dispara o init diferido imediatamente (o polling de visibilidade
+      // do GRAPH_3D_INIT_JS continua como fallback).
+      if (typeof window._graph3dEnsureInit === 'function') window._graph3dEnsureInit();
       var container = document.getElementById('network-graph');
       if (_graph3d && container) {
         _graph3d.width(container.clientWidth).height(container.clientHeight);
@@ -2143,6 +2210,8 @@ function doPrint() {
 
 // ── Transfer graph (3d-force-graph) ──
 ${GRAPH_3D_TOOLTIP_JS}
+${PIE_CHARTS_JS}
+${MANIP_TOOLTIP_BIND_JS}
 ${GRAPH_3D_INIT_JS}
 ${GRAPH_3D_SEARCH_JS}
 
