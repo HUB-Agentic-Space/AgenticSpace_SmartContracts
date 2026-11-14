@@ -96,7 +96,12 @@ export const INTERACTIVE_TOOLTIP_CSS = `
   #vis-custom-tooltip {
     position: fixed;
     z-index: 9999;
-    max-width: 380px;
+    max-width: 475px;
+    max-height: min(70vh, 560px);
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: #F05F40 #712d23;
     background: #712d23;
     color: #ffffff;
     border: 1px solid rgba(255,255,255,0.15);
@@ -110,6 +115,9 @@ export const INTERACTIVE_TOOLTIP_CSS = `
     transition: opacity 0.15s ease-in-out;
     display: none;
   }
+  #vis-custom-tooltip::-webkit-scrollbar { width: 6px; }
+  #vis-custom-tooltip::-webkit-scrollbar-track { background: #712d23; border-radius: 3px; }
+  #vis-custom-tooltip::-webkit-scrollbar-thumb { background: #F05F40; border-radius: 3px; }
   #vis-custom-tooltip.visible { opacity: 1; display: block; }
   #vis-custom-tooltip b { color: #fcc650; }
   #vis-custom-tooltip code { color: #f7d4ca; background: rgba(255,255,255,0.08); padding: 2px 6px; border-radius: 4px; font-size: 0.8rem; }
@@ -157,6 +165,7 @@ export const INTERACTIVE_TOOLTIP_JS = `
     var ty = y + 14;
     if (tx + rect.width > window.innerWidth - 8) tx = x - rect.width - 14;
     if (ty + rect.height > window.innerHeight - 8) ty = y - rect.height - 14;
+    if (ty + rect.height > window.innerHeight - 8) ty = Math.max(8, window.innerHeight - rect.height - 8);
     if (tx < 8) tx = 8;
     if (ty < 8) ty = 8;
     tooltipEl.style.left = tx + 'px';
@@ -178,9 +187,9 @@ export const INTERACTIVE_TOOLTIP_JS = `
     tooltipSuppressed = false;
   }
 
-  function scheduleHide() {
+  function scheduleHide(delayMs) {
     clearHideTimer();
-    hideTimer = setTimeout(hideTooltip, 300);
+    hideTimer = setTimeout(hideTooltip, delayMs || 300);
   }
 
   tooltipEl.addEventListener('mouseenter', clearHideTimer);
