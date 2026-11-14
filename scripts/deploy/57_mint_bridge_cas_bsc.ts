@@ -50,6 +50,10 @@ const CAS_ABI = [
   "function maxSupply() view returns (uint256)",
   "function hasRole(bytes32 role, address account) view returns (bool)",
   "function paused() view returns (bool)",
+  // Guardas de compliance do CAS dev (main) — ausentes no CASv2
+  // (release/cas-v2): chamadas opcionais, detectadas via try/catch.
+  "function isFrozen(address account) view returns (bool)",
+  "function isVotingLockActive() view returns (bool)",
 ];
 
 const ADAPTER_ABI = [
@@ -160,15 +164,26 @@ async function main(): Promise<void> {
     adapter.peers(Number(env.LZ_EID_BSC)),
   ]);
 
+  // Guardas opcionais do CAS dev (freeze/votingLock): ausentes no CASv2 —
+  // detecta via try/catch para o script servir as duas versoes do token.
+  let deployerFrozen: boolean | null = null;
+  let votingLock: boolean | null = null;
+  try { deployerFrozen = await cas.isFrozen(deployer.address); } catch { /* CASv2 */ }
+  try { votingLock = await cas.isVotingLockActive(); } catch { /* CASv2 */ }
+
   console.log(`\n${SUB}\n  Estado on-chain\n${SUB}`);
   console.log(`  CAS pausado:        ${paused}`);
   console.log(`  Deployer MINTER:    ${isMinter}`);
   console.log(`  Saldo CAS deployer: ${ethers.formatEther(casBalance)}`);
   console.log(`  Supply:             ${ethers.formatEther(totalSupply)} / ${ethers.formatEther(maxSupply)}`);
   console.log(`  Peer BSC no adapter:${peerBsc}`);
+  if (deployerFrozen !== null) console.log(`  Deployer frozen:    ${deployerFrozen}`);
+  if (votingLock !== null) console.log(`  Voting lock ativo:  ${votingLock}`);
 
   const problems: string[] = [];
   if (paused) problems.push("CASToken esta PAUSADO — mint/send vao reverter");
+  if (deployerFrozen) problems.push("deployer esta FROZEN — mint e send vao reverter (CAS dev)");
+  if (votingLock) problems.push("votingLock ATIVO — transfers de CAS bloqueados (CAS dev)");
   if (mintEnabled && !isMinter) problems.push("deployer sem MINTER_ROLE para o mint");
   if (mintEnabled && totalSupply + mintAmount > maxSupply)
     problems.push(`mint excede MAX_SUPPLY (${ethers.formatEther(totalSupply + mintAmount)} > ${ethers.formatEther(maxSupply)})`);

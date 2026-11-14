@@ -139,8 +139,19 @@ SEED_EXECUTE=true npx hardhat run scripts/deploy/58_seed_pancakeswap_binpool_bsc
 - **EndpointV2** (`0x1a44…728c`) é o mesmo endereço canônico nas duas
   chains; DVN/executor default da LayerZero — `setConfig` customizado pode
   ser aplicado pelo `delegate` depois, sem redeploy.
-- **Testes**: `test/bridge/CASOFT.test.ts` (7 casos com `EndpointV2Mock`:
-  lock/mint 1:1, round-trip, pausa, acesso, peer ausente) e
+- **Compatibilidade CASv2 × CAS dev**: a bridge funciona com as duas
+  versões do token — CASv2 (`release/cas-v2`, superfície ERC-20 pura,
+  testado contra o bytecode real em `test/fixtures/CASTokenV2.json`) e
+  CAS dev (`main`, com `freeze`/`freezeUntil`/`votingLock`). O script 57
+  faz feature-detection das guardas de compliance (try/catch) — exige-as
+  quando existem, ignora-as quando ausentes. Na ida A→B, deployer frozen
+  ou votingLock ativo **revertem o send**; na volta B→A, destinatário
+  frozen **não reverte o send** — a entrega falha no endpoint de destino
+  (CAS permanece travado no adapter, sem perda) e pode ser retomada pelo
+  executor após `unfreeze`.
+- **Testes**: `test/bridge/CASOFT.test.ts` (14 casos com `EndpointV2Mock`:
+  lock/mint 1:1, round-trip nas duas versões do token, pausa, freeze,
+  votingLock, destinatário frozen com retry, peer ausente) e
   `test/scripts/binpool_math.test.ts` (13 casos das funções puras de bin).
 - **Auditoria**: regra `solidity-security` — revisão independente
   obrigatória antes do uso em produção; os wrappers LZ foram verificados

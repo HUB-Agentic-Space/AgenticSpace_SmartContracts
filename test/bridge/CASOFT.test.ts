@@ -35,6 +35,17 @@ const EndpointV2MockArtifact = JSON.parse(
   ),
 );
 
+// Bytecode REAL do CASv2 (compilado no branch release/cas-v2) — fixture que
+// prova o adapter funcionar com a versao em producao do token.
+const CASTokenV2Artifact = JSON.parse(
+  fs.readFileSync(
+    path.join(__dirname, "../fixtures/CASTokenV2.json"),
+    "utf8",
+  ),
+);
+
+const COMPLIANCE_ROLE = ethers.keccak256(ethers.toUtf8Bytes("COMPLIANCE_ROLE"));
+
 const EID_A = 30109; // Polygon
 const EID_B = 30102; // BSC
 const INITIAL_SUPPLY = ethers.parseEther("1000000"); // 1M CAS
@@ -52,7 +63,7 @@ async function deployFixture() {
 
   // CASToken (UUPS proxy) — admin = owner
   const CASToken = await ethers.getContractFactory("CASToken");
-  const casToken = await upgrades.deployProxy(
+  const casToken: any = await upgrades.deployProxy(
     CASToken,
     [owner.address, INITIAL_SUPPLY, "Cryptocoin Agentic Space", "CAS"],
     { kind: "uups" },
@@ -65,20 +76,20 @@ async function deployFixture() {
     EndpointV2MockArtifact.bytecode,
     owner,
   );
-  const mockA = await MockFactory.deploy(EID_A);
-  const mockB = await MockFactory.deploy(EID_B);
+  const mockA: any = await MockFactory.deploy(EID_A);
+  const mockB: any = await MockFactory.deploy(EID_B);
   const mockAAddr = await mockA.getAddress();
   const mockBAddr = await mockB.getAddress();
 
   // OApps
   const AdapterFactory = await ethers.getContractFactory("CASOFTAdapter");
-  const adapter = await AdapterFactory.deploy(
+  const adapter: any = await AdapterFactory.deploy(
     await casToken.getAddress(),
     mockAAddr,
     delegate.address,
   );
   const OftFactory = await ethers.getContractFactory("CASOFT");
-  const oft = await OftFactory.deploy(mockBAddr, delegate.address);
+  const oft: any = await OftFactory.deploy(mockBAddr, delegate.address);
   const adapterAddr = await adapter.getAddress();
   const oftAddr = await oft.getAddress();
 
@@ -190,12 +201,96 @@ describe("CASOFT bridge (LayerZero OFT)", function () {
     ).to.be.reverted;
   });
 
+  it("send reverte com deployer FROZEN (guarda do CAS dev/main)", async function () {
+    const { owner, casToken, adapter, adapterAddr } = await loadFixture(deployFixture);
+    await casToken.connect(owner).grantRole(COMPLIANCE_ROLE, owner.address);
+    await casToken.connect(owner).freeze(owner.address);
+
+    const param = sendParam(EID_B, owner.address, SEND_AMOUNT);
+    const fee = await adapter.quoteSend(param, false);
+    await casToken.connect(owner).approve(adapterAddr, SEND_AMOUNT);
+    await expect(
+      adapter.connect(owner).send(
+        param, { nativeFee: fee.nativeFee, lzTokenFee: 0n }, owner.address,
+        { value: fee.nativeFee },
+      ),
+    ).to.be.reverted;
+  });
+
+  it("send reverte com votingLock ativo (guarda do CAS dev/main)", async function () {
+    const { owner, casToken, adapter, adapterAddr } = await loadFixture(deployFixture);
+    await casToken.connect(owner).grantRole(COMPLIANCE_ROLE, owner.address);
+    await casToken.connect(owner).setVotingLock(true);
+
+    const param = sendParam(EID_B, owner.address, SEND_AMOUNT);
+    const fee = await adapter.quoteSend(param, false);
+    await casToken.connect(owner).approve(adapterAddr, SEND_AMOUNT);
+    await expect(
+      adapter.connect(owner).send(
+        param, { nativeFee: fee.nativeFee, lzTokenFee: 0n }, owner.address,
+        { value: fee.nativeFee },
+      ),
+    ).to.be.reverted;
+  });
+
+  it("unlock B->A com destinatario FROZEN: entrega falha (CAS seguro no adapter) e retry apos unfreeze libera", async function () {
+    const { owner, user, casToken, adapter, oft, adapterAddr, mockA, oftAddr } =
+      await loadFixture(deployFixture);
+
+    // ida para a BSC
+    const paramAB = sendParam(EID_B, owner.address, SEND_AMOUNT);
+    const feeAB = await adapter.quoteSend(paramAB, false);
+    await casToken.connect(owner).approve(adapterAddr, SEND_AMOUNT);
+    await adapter.connect(owner).send(
+      paramAB, { nativeFee: feeAB.nativeFee, lzTokenFee: 0n }, owner.address,
+      { value: feeAB.nativeFee },
+    );
+
+    // congela o destinatario na Polygon e devolve
+    await casToken.connect(owner).grantRole(COMPLIANCE_ROLE, owner.address);
+    await casToken.connect(owner).freeze(user.address);
+
+    const paramBA = sendParam(EID_A, user.address, SEND_AMOUNT);
+    const feeBA = await oft.quoteSend(paramBA, false);
+    // semantica real do endpoint LZ: o send NAO reverte — a entrega falha no
+    // destino e a mensagem fica pendente para retry. OFT e queimado na BSC.
+    await oft.connect(owner).send(
+      paramBA, { nativeFee: feeBA.nativeFee, lzTokenFee: 0n }, owner.address,
+      { value: feeBA.nativeFee },
+    );
+
+    expect(await oft.balanceOf(owner.address)).to.equal(0n);
+    expect(await casToken.balanceOf(user.address)).to.equal(0n);
+    // CAS permanece travado no adapter — nao ha perda de fundos
+    expect(await casToken.balanceOf(adapterAddr)).to.equal(SEND_AMOUNT);
+
+    // descongela e simula o retry do executor no endpoint A
+    await casToken.connect(owner).unfreeze(user.address);
+    const amountSD = SEND_AMOUNT / 10n ** 12n; // sharedDecimals = 6
+    const message = ethers.solidityPacked(
+      ["bytes32", "uint64"],
+      [ethers.zeroPadValue(user.address, 32), amountSD],
+    );
+    const origin = {
+      srcEid: EID_B,
+      sender: ethers.zeroPadValue(oftAddr, 32),
+      nonce: 1n,
+    };
+    await mockA.receivePayload(
+      origin, adapterAddr, ethers.keccak256(message), message, 400_000, 0n,
+      ethers.keccak256(ethers.toUtf8Bytes("retry-guid")),
+    );
+
+    expect(await casToken.balanceOf(user.address)).to.equal(SEND_AMOUNT);
+    expect(await casToken.balanceOf(adapterAddr)).to.equal(0n);
+  });
+
   it("reverte com peer nao configurado", async function () {
     const { owner, casToken, mockA, delegate } = await loadFixture(deployFixture);
 
     // adapter novo sem setPeer
     const AdapterFactory = await ethers.getContractFactory("CASOFTAdapter");
-    const fresh = await AdapterFactory.deploy(
+    const fresh: any = await AdapterFactory.deploy(
       await casToken.getAddress(),
       await mockA.getAddress(),
       delegate.address,
@@ -205,5 +300,118 @@ describe("CASOFT bridge (LayerZero OFT)", function () {
     const param = sendParam(EID_B, owner.address, SEND_AMOUNT);
     await casToken.connect(owner).approve(freshAddr, SEND_AMOUNT);
     await expect(fresh.connect(owner).quoteSend(param, false)).to.be.reverted;
+  });
+});
+
+describe("CASOFT bridge — compatibilidade CASv2 (release/cas-v2)", function () {
+  /**
+   * Deploya o CASv2 REAL (artifact compilado no branch release/cas-v2) como
+   * proxy UUPS — impl + ERC1967Proxy + initialize — e verifica que o mesmo
+   * CASOFTAdapter/CASOFT funciona com a versao em producao do token.
+   */
+  async function deployV2Fixture() {
+    const [owner, delegate] = await ethers.getSigners();
+
+    // impl CASv2 (bytecode real, nao a versao main)
+    const CASV2Factory = new ethers.ContractFactory(
+      CASTokenV2Artifact.abi,
+      CASTokenV2Artifact.bytecode,
+      owner,
+    );
+    const impl = await CASV2Factory.deploy();
+    const initData = CASV2Factory.interface.encodeFunctionData("initialize", [
+      owner.address, INITIAL_SUPPLY, "Criptocoin Agentic Space", "CAS",
+    ]);
+    const ProxyFactory = await ethers.getContractFactory("ERC1967Proxy");
+    const proxy = await ProxyFactory.deploy(await impl.getAddress(), initData);
+    const casV2 = CASV2Factory.attach(await proxy.getAddress()) as any;
+
+    const MockFactory = new ethers.ContractFactory(
+      EndpointV2MockArtifact.abi,
+      EndpointV2MockArtifact.bytecode,
+      owner,
+    );
+    const mockA: any = await MockFactory.deploy(EID_A);
+    const mockB: any = await MockFactory.deploy(EID_B);
+    const mockAAddr = await mockA.getAddress();
+    const mockBAddr = await mockB.getAddress();
+
+    const AdapterFactory = await ethers.getContractFactory("CASOFTAdapter");
+    const adapter: any = await AdapterFactory.deploy(
+      await casV2.getAddress(), mockAAddr, delegate.address,
+    );
+    const OftFactory = await ethers.getContractFactory("CASOFT");
+    const oft: any = await OftFactory.deploy(mockBAddr, delegate.address);
+    const adapterAddr = await adapter.getAddress();
+    const oftAddr = await oft.getAddress();
+
+    await mockA.setDestLzEndpoint(oftAddr, mockBAddr);
+    await mockB.setDestLzEndpoint(adapterAddr, mockAAddr);
+    await adapter.connect(delegate).setPeer(EID_B, ethers.zeroPadValue(oftAddr, 32));
+    await oft.connect(delegate).setPeer(EID_A, ethers.zeroPadValue(adapterAddr, 32));
+
+    return { owner, delegate, casV2, adapter, oft, adapterAddr };
+  }
+
+  it("CASv2: metadados e supply inicial corretos", async function () {
+    const { casV2, owner } = await loadFixture(deployV2Fixture);
+    expect(await casV2.symbol()).to.equal("CAS");
+    expect(await casV2.decimals()).to.equal(18);
+    expect(await casV2.balanceOf(owner.address)).to.equal(INITIAL_SUPPLY);
+    expect(await casV2.maxSupply()).to.equal(ethers.parseEther("10000000"));
+  });
+
+  it("CASv2: send A->B trava CASv2 e minta OFT 1:1", async function () {
+    const { owner, casV2, adapter, oft, adapterAddr } = await loadFixture(deployV2Fixture);
+
+    const param = sendParam(EID_B, owner.address, SEND_AMOUNT);
+    const fee = await adapter.quoteSend(param, false);
+    await casV2.connect(owner).approve(adapterAddr, SEND_AMOUNT);
+    await adapter.connect(owner).send(
+      param, { nativeFee: fee.nativeFee, lzTokenFee: 0n }, owner.address,
+      { value: fee.nativeFee },
+    );
+
+    expect(await casV2.balanceOf(owner.address)).to.equal(INITIAL_SUPPLY - SEND_AMOUNT);
+    expect(await casV2.balanceOf(adapterAddr)).to.equal(SEND_AMOUNT);
+    expect(await oft.balanceOf(owner.address)).to.equal(SEND_AMOUNT);
+  });
+
+  it("CASv2: round-trip B->A queima OFT e libera CASv2", async function () {
+    const { owner, casV2, adapter, oft, adapterAddr } = await loadFixture(deployV2Fixture);
+
+    const paramAB = sendParam(EID_B, owner.address, SEND_AMOUNT);
+    const feeAB = await adapter.quoteSend(paramAB, false);
+    await casV2.connect(owner).approve(adapterAddr, SEND_AMOUNT);
+    await adapter.connect(owner).send(
+      paramAB, { nativeFee: feeAB.nativeFee, lzTokenFee: 0n }, owner.address,
+      { value: feeAB.nativeFee },
+    );
+
+    const paramBA = sendParam(EID_A, owner.address, SEND_AMOUNT);
+    const feeBA = await oft.quoteSend(paramBA, false);
+    await oft.connect(owner).send(
+      paramBA, { nativeFee: feeBA.nativeFee, lzTokenFee: 0n }, owner.address,
+      { value: feeBA.nativeFee },
+    );
+
+    expect(await oft.balanceOf(owner.address)).to.equal(0n);
+    expect(await casV2.balanceOf(adapterAddr)).to.equal(0n);
+    expect(await casV2.balanceOf(owner.address)).to.equal(INITIAL_SUPPLY);
+  });
+
+  it("CASv2: send reverte quando pausado", async function () {
+    const { owner, casV2, adapter, adapterAddr } = await loadFixture(deployV2Fixture);
+    await casV2.connect(owner).pause();
+
+    const param = sendParam(EID_B, owner.address, SEND_AMOUNT);
+    const fee = await adapter.quoteSend(param, false);
+    await casV2.connect(owner).approve(adapterAddr, SEND_AMOUNT);
+    await expect(
+      adapter.connect(owner).send(
+        param, { nativeFee: fee.nativeFee, lzTokenFee: 0n }, owner.address,
+        { value: fee.nativeFee },
+      ),
+    ).to.be.reverted;
   });
 });
