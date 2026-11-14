@@ -4,7 +4,10 @@
  * Script especializado em visualização de grafos de transferências do
  * token CAS na Polygon Mainnet. Lê transferências do SQLite local ou
  * sincroniza via Etherscan V2 (multichain), calcula saldos/labels e gera
- * um HTML independente com o grafo 3D interativo (3d-force-graph / Three.js).
+ * um HTML independente com o grafo 3D interativo (3d-force-graph / Three.js)
+ * e gráficos de pizza (Chart.js) com a distribuição de holders por saldo
+ * e os maiores movimentadores de CAS — contas que somadas representam
+ * menos de ~10% são agrupadas na fatia "Outras contas".
  *
  * Uso:
  *   npm run analysis:cas:graph
@@ -153,6 +156,39 @@ interface GraphEdge {
   volumeLabel: string;
   alerts?: GraphAlert[];
   dashes?: boolean;
+}
+
+/**
+ * Fatia de um gráfico de pizza do dashboard.
+ * `share` é a porcentagem (0-100) do total representado e `tooltipHtml`
+ * o conteúdo rico exibido no tooltip customizado ao passar o mouse.
+ */
+interface PieSlice {
+  label: string;
+  share: number;
+  tooltipHtml: string;
+}
+
+/**
+ * Dados dos dois gráficos de distribuição do dashboard:
+ * `holders` (participação no supply) e `movers` (participação nas
+ * movimentações, soma de enviadas + recebidas por conta).
+ */
+interface PieData {
+  holders: PieSlice[];
+  movers: PieSlice[];
+}
+
+/**
+ * Uma movimentação de uma conta, para a lista "últimas N movimentações"
+ * exibida no tooltip das fatias da pizza.
+ */
+interface AccountMovement {
+  timestamp: number;
+  direction: "out" | "in";
+  counterparty: string;
+  value: number;
+  hash: string;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -681,6 +717,7 @@ interface GraphData {
     depth: number;
   };
   alerts: GraphAlert[];
+  pie: PieData;
 }
 
 interface GnnDiagnosis {
@@ -1013,6 +1050,21 @@ function buildGraphData(
     }
   }
 
+  const totalMovements = [...nodeStats.entries()]
+    .filter(([addr]) => addr !== ZERO)
+    .reduce((s, [, st]) => s + st.sent + st.received, 0);
+
+  const pie = buildPieData(
+    transfers,
+    holders,
+    nodeStats,
+    labels,
+    anonFor,
+    nodeAlertMap,
+    holderBalanceMap,
+    totalMovements,
+  );
+
   return {
     nodes,
     edges,
@@ -1025,7 +1077,278 @@ function buildGraphData(
       depth,
     },
     alerts,
+    pie,
   };
+}
+
+// ── Distribution pies ─────────────────────────────────────────────────
+
+/**
+ * Conta ranqueada por participação percentual (saldo ou movimentações).
+ *
+ * @property address - endereço da conta em lowercase.
+ * @property share   - participação percentual (0-100) no total.
+ */
+interface RankedAccount {
+  address: string;
+  share: number;
+}
+
+/**
+ * Separa contas em fatias individuais e um grupo final limitado a
+ * `maxGroupSharePct` do total. Itera as contas (já ordenadas em ordem
+ * decrescente) exibindo-as individualmente enquanto a soma remanescente
+ * superar o limite; o restante é retornado para ser agrupado na fatia
+ * "Outras contas".
+ *
+ * @param accounts         - contas ordenadas da maior para a menor share.
+ * @param maxGroupSharePct - teto percentual da fatia agrupada (default 10%).
+ * @returns indivíduos exibidos um a um e contas que devem ser agrupadas.
+ */
+function groupTail(
+  accounts: RankedAccount[],
+  maxGroupSharePct = 10,
+): { individuals: RankedAccount[]; grouped: RankedAccount[] } {
+  let remaining = accounts.reduce((s, a) => s + a.share, 0);
+  const individuals: RankedAccount[] = [];
+  let i = 0;
+  while (i < accounts.length && remaining > maxGroupSharePct) {
+    individuals.push(accounts[i]);
+    remaining -= accounts[i].share;
+    i++;
+  }
+  return { individuals, grouped: accounts.slice(i) };
+}
+
+/**
+ * Retorna as últimas `limit` movimentações de uma conta (enviadas ou
+ * recebidas), ordenadas da mais recente para a mais antiga.
+ *
+ * @param addr       - endereço da conta (qualquer caixa).
+ * @param transfers  - transferências CAS já filtradas pelo escopo do relatório.
+ * @param limit      - máximo de movimentações retornadas (default 10).
+ * @returns lista de movimentações com direção, contraparte, valor e hash.
+ */
+function lastMovements(addr: string, transfers: TokenTransfer[], limit = 10): AccountMovement[] {
+  const lower = addr.toLowerCase();
+  const movs: AccountMovement[] = [];
+  for (const t of transfers) {
+    const from = t.from.toLowerCase();
+    const to = t.to.toLowerCase();
+    if (from !== lower && to !== lower) continue;
+    movs.push({
+      timestamp: Number(t.timeStamp),
+      direction: from === lower ? "out" : "in",
+      counterparty: from === lower ? to : from,
+      value: toNum(BigInt(t.value)),
+      hash: t.hash,
+    });
+  }
+  movs.sort((a, b) => b.timestamp - a.timestamp);
+  return movs.slice(0, limit);
+}
+
+/**
+ * Nome de exibição de uma conta: "Anon N" em modo anônimo, label
+ * conhecida ou endereço encurtado.
+ */
+function displayAccountName(
+  addr: string,
+  labels: Map<string, KnownAddress>,
+  anonFor: (a: string) => string | undefined,
+): string {
+  const anon = anonFor(addr.toLowerCase());
+  if (anon) return anon;
+  return labels.get(addr.toLowerCase())?.label || shortAddr(addr.toLowerCase());
+}
+
+/**
+ * HTML clicável de uma conta para tooltips (link PolygonScan), ou
+ * `<code>` com o nome anônimo em modo `--anon`.
+ */
+function accountLinkHtml(
+  addr: string,
+  labels: Map<string, KnownAddress>,
+  anonFor: (a: string) => string | undefined,
+): string {
+  const lower = addr.toLowerCase();
+  if (lower === ZERO) return `<em>⛓️ endereço zero</em>`;
+  const anon = anonFor(lower);
+  if (anon) return `<code>${anon}</code>`;
+  const known = labels.get(lower);
+  const display = known?.label ? `${known.label} (${shortAddr(lower)})` : shortAddr(lower);
+  return polyScanLink(lower, display);
+}
+
+/**
+ * HTML da lista "Últimas N movimentações" de uma conta: data UTC,
+ * direção (enviada/recebida/mint/burn), contraparte clicável, valor em
+ * CAS e link do hash da transação no PolygonScan.
+ */
+function formatMovementsHtml(
+  movs: AccountMovement[],
+  labels: Map<string, KnownAddress>,
+  anonFor: (a: string) => string | undefined,
+): string {
+  if (movs.length === 0) return "";
+  const rows = movs
+    .map((m) => {
+      const date = new Date(m.timestamp * 1000).toLocaleString("pt-BR", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        timeZone: "UTC",
+      });
+      const isMint = m.direction === "in" && m.counterparty === ZERO;
+      const isBurn = m.direction === "out" && m.counterparty === ZERO;
+      const dir = isMint ? "🪙 Mint" : isBurn ? "🔥 Burn" : m.direction === "out" ? "▲ Enviada" : "▼ Recebida";
+      const cp = isMint || isBurn ? "" : ` ${m.direction === "out" ? "→" : "←"} ${accountLinkHtml(m.counterparty, labels, anonFor)}`;
+      const sign = m.direction === "out" ? "-" : "+";
+      const color = m.direction === "out" ? "#eb3812" : "#F05F40";
+      const txLink = `<a href="https://polygonscan.com/tx/${m.hash}" target="_blank" data-full-address="${m.hash}" style="color:#fcc650;text-decoration:none;"><code>${m.hash.slice(0, 10)}…</code></a>`;
+      return `<li style="margin-bottom:3px;"><span style="color:var(--muted);font-size:.72rem;">${date} UTC</span> ${dir}${cp} <b style="color:${color};">${sign}${fmt(m.value, 2)}</b> ${txLink}</li>`;
+    })
+    .join("");
+  return `<br><br><b style="color:#fcc650;">Últimas ${movs.length} movimentações:</b><ul style="margin:4px 0;padding-left:16px;list-style:none;">${rows}</ul>`;
+}
+
+/**
+ * Tooltip rico de uma conta individual para as pizzas do dashboard:
+ * identidade, saldo total atual, tipo/moeda/observação, estatísticas de
+ * movimentação, últimas 10 movimentações e alertas de segurança.
+ */
+function accountPieTooltip(params: {
+  addr: string;
+  labels: Map<string, KnownAddress>;
+  anonFor: (a: string) => string | undefined;
+  holderBalance: number;
+  holderPct: number;
+  stat?: { sent: number; received: number; volume: number };
+  movements: AccountMovement[];
+  alerts: GraphAlert[];
+}): string {
+  const { addr, labels, anonFor, holderBalance, holderPct, stat, movements, alerts } = params;
+  const lower = addr.toLowerCase();
+  const known = labels.get(lower);
+  const name = displayAccountName(lower, labels, anonFor);
+  const type = known?.type ?? "unknown";
+  const asset = known?.asset ?? "";
+  const obs = known?.observation ?? "";
+  const typeHtml = type !== "unknown" ? `<br>${typeEmoji(type)} Tipo: ${type}` : "";
+  const assetHtml = asset ? `<br>💰 Moeda: ${asset}` : "";
+  const obsHtml = obs ? `<br><em style="color:#f7d4ca;">${obs}</em>` : "";
+  const balanceHtml = `<br><b>Saldo total atual:</b> ${fmt(holderBalance, 2)} CAS (${holderPct.toFixed(2)}% do supply)`;
+  const statHtml = stat ? `<br>Enviadas: ${stat.sent} | Recebidas: ${stat.received}<br>Volume: ${fmt(stat.volume, 2)} CAS` : "";
+  const alertBadge = alerts.length > 0 ? ` <span style="color:#eb3812;">⚠️ ${alerts.length}</span>` : "";
+  return `<b>${name}</b>${alertBadge}<br>${accountLinkHtml(lower, labels, anonFor)}${balanceHtml}${typeHtml}${assetHtml}${statHtml}${obsHtml}${formatMovementsHtml(movements, labels, anonFor)}${formatAlertsHtml(alerts)}`;
+}
+
+/**
+ * Tooltip da fatia agrupada "Outras contas": quantidade de contas,
+ * participação somada, lista rolável das contas agrupadas (movimentações,
+ * saldo e share) e alertas de segurança agregados dos membros.
+ */
+function groupPieTooltip(
+  members: RankedAccount[],
+  metricLabel: string,
+  labels: Map<string, KnownAddress>,
+  anonFor: (a: string) => string | undefined,
+  nodeStats: Map<string, { sent: number; received: number; volume: number }>,
+  holderBalanceMap: Map<string, { balance: bigint; pct: number }>,
+  nodeAlertMap: Map<string, GraphAlert[]>,
+): string {
+  const share = members.reduce((s, m) => s + m.share, 0);
+  const alertSet = new Map<string, GraphAlert>();
+  for (const m of members) {
+    for (const a of nodeAlertMap.get(m.address) ?? []) {
+      alertSet.set(`${a.type}|${a.addresses.join(",")}`, a);
+    }
+  }
+  const lines = members
+    .map((m) => {
+      const holder = holderBalanceMap.get(m.address);
+      const stat = nodeStats.get(m.address);
+      const detail = stat ? `${stat.sent + stat.received} mov. · ` : "";
+      return `<li>${accountLinkHtml(m.address, labels, anonFor)} — ${detail}${holder ? `${fmt(toNum(holder.balance), 2)} CAS` : "sem saldo"} <span style="color:var(--muted);font-size:.72rem;">(${m.share.toFixed(2)}%)</span></li>`;
+    })
+    .join("");
+  return `<b>Outras contas (${members.length})</b><br>Somadas: ${share.toFixed(2)}% ${metricLabel}<ul style="margin:6px 0;padding-left:16px;">${lines}</ul>${formatAlertsHtml([...alertSet.values()])}`;
+}
+
+/**
+ * Constrói os dados das duas pizzas do dashboard:
+ *
+ * - `holders`: participação de cada conta no supply CAS (de `holders[]`).
+ * - `movers`: participação de cada conta no total de movimentações
+ *   (enviadas + recebidas, excluindo o endereço zero).
+ *
+ * Em ambos, contas são exibidas individualmente da maior para a menor;
+ * quando a soma remanescente fica ≤10% do total, o resto vira a fatia
+ * "Outras contas" (regra `groupTail`).
+ */
+function buildPieData(
+  transfers: TokenTransfer[],
+  holders: Holder[],
+  nodeStats: Map<string, { sent: number; received: number; volume: number }>,
+  labels: Map<string, KnownAddress>,
+  anonFor: (a: string) => string | undefined,
+  nodeAlertMap: Map<string, GraphAlert[]>,
+  holderBalanceMap: Map<string, { balance: bigint; pct: number }>,
+  totalMovements: number,
+): PieData {
+  const holderAccounts: RankedAccount[] = holders.map((h) => ({ address: h.address, share: h.pct }));
+  const moverAccounts: RankedAccount[] = [...nodeStats.entries()]
+    .filter(([a]) => a !== ZERO)
+    .map(([a, s]) => ({ address: a, share: totalMovements > 0 ? ((s.sent + s.received) / totalMovements) * 100 : 0 }))
+    .sort((a, b) => b.share - a.share);
+
+  const mkSlice = (acc: RankedAccount): PieSlice => {
+    const holder = holderBalanceMap.get(acc.address);
+    const stat = nodeStats.get(acc.address);
+    const alerts = nodeAlertMap.get(acc.address) ?? [];
+    const movements = lastMovements(acc.address, transfers, 10);
+    return {
+      label: `${displayAccountName(acc.address, labels, anonFor)} · ${acc.share.toFixed(1)}%`,
+      share: acc.share,
+      tooltipHtml: accountPieTooltip({
+        addr: acc.address,
+        labels,
+        anonFor,
+        holderBalance: holder ? toNum(holder.balance) : 0,
+        holderPct: holder ? holder.pct : 0,
+        stat,
+        movements,
+        alerts,
+      }),
+    };
+  };
+
+  const h = groupTail(holderAccounts);
+  const m = groupTail(moverAccounts);
+
+  const holdersSlices = h.individuals.map(mkSlice);
+  if (h.grouped.length > 0) {
+    const share = h.grouped.reduce((s, a) => s + a.share, 0);
+    holdersSlices.push({
+      label: `Outras contas (${h.grouped.length}) · ${share.toFixed(1)}%`,
+      share,
+      tooltipHtml: groupPieTooltip(h.grouped, "do supply", labels, anonFor, nodeStats, holderBalanceMap, nodeAlertMap),
+    });
+  }
+
+  const moverSlices = m.individuals.map(mkSlice);
+  if (m.grouped.length > 0) {
+    const share = m.grouped.reduce((s, a) => s + a.share, 0);
+    moverSlices.push({
+      label: `Outras contas (${m.grouped.length}) · ${share.toFixed(1)}%`,
+      share,
+      tooltipHtml: groupPieTooltip(m.grouped, "das movimentações", labels, anonFor, nodeStats, holderBalanceMap, nodeAlertMap),
+    });
+  }
+
+  return { holders: holdersSlices, movers: moverSlices };
 }
 
 // ── GNN diagnosis ─────────────────────────────────────────────────────
@@ -1143,6 +1466,7 @@ function diagnosisToHtml(d: GnnDiagnosis, graphAlerts: GraphAlert[]): string {
 function buildGraphHtml(graph: GraphData, tokenAddress: string, diagnosis?: GnnDiagnosis | null, periodLabel?: string): string {
   const diagnosisHtml = diagnosis ? diagnosisToHtml(diagnosis, graph.alerts) : "";
   const graphDataJson = JSON.stringify({ nodes: graph.nodes, edges: graph.edges });
+  const pieDataJson = JSON.stringify(graph.pie);
 
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -1150,6 +1474,7 @@ function buildGraphHtml(graph: GraphData, tokenAddress: string, diagnosis?: GnnD
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CAS — Grafo 3D + Diagnóstico</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 ${GRAPH_3D_CDN}
 <style>
   :root { --bg:#222222; --card:#712d23; --border:rgba(255,255,255,0.15); --text:#ffffff; --muted:#f7d4ca; --accent:#F05F40; --gold:#fcc650; }
@@ -1172,8 +1497,15 @@ ${GRAPH_3D_CDN}
   .graph-legend { display:flex; gap:20px; margin-top:12px; flex-wrap:wrap; font-size:.85rem; color:var(--muted); }
   .graph-legend span { display:flex; align-items:center; gap:6px; }
   .graph-legend .dot { width:12px; height:12px; border-radius:50%; display:inline-block; }
+  .pie-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:16px; }
+  .pie-wrap { position:relative; height:400px; }
+  .pie-title { color:var(--gold); font-size:.95rem; margin-bottom:8px; }
   ${GRAPH_3D_CSS}
   .term { cursor:help; text-decoration:underline dotted; }
+  @media print {
+    .pie-wrap { height:280px !important; }
+    #vis-custom-tooltip { display:none !important; }
+  }
 </style>
 </head>
 <body>
@@ -1188,6 +1520,19 @@ ${GRAPH_3D_CDN}
 </div>
 
 ${diagnosisHtml}
+<div class="card" style="margin-bottom:16px;">
+  <h2 style="color:#fcc650;font-size:1.1rem;margin-bottom:12px;">🥧 Distribuição CAS</h2>
+  <div class="pie-grid">
+    <div>
+      <h3 class="pie-title">Holders por saldo (% do supply)</h3>
+      <div class="pie-wrap"><canvas id="pie-holders"></canvas></div>
+    </div>
+    <div>
+      <h3 class="pie-title">Maiores movimentadores (% das movimentações)</h3>
+      <div class="pie-wrap"><canvas id="pie-movers"></canvas></div>
+    </div>
+  </div>
+</div>
 <div class="card">
   <div class="graph-search-bar">
     <input type="text" id="graph-search-input" placeholder="Buscar por label ou endereço..." autocomplete="off" onkeydown="if(event.key==='Enter')searchGraph()" />
@@ -1222,8 +1567,100 @@ ${diagnosisHtml}
 
 <script>
 const graphData = ${graphDataJson};
+const pieData = ${pieDataJson};
 
 ${GRAPH_3D_TOOLTIP_JS}
+
+// ── Distribuição CAS (pizzas Chart.js) ──
+// Tooltip externo reusa window._visTooltip (mesmo tooltip rolável dos
+// nós/arestas do grafo 3D). Chart.js indisponível (CDN offline) degrada
+// para mensagem sem quebrar o restante do dashboard.
+(function() {
+  var CAS_PALETTE = ["#F05F40","#fcc650","#cc7501","#eb3812","#ce6e6d","#f7d4ca","#d4502e","#b5651d",
+                     "#fdd97a","#d9908f","#fae5df","#ff7a5c","#e89642","#ffd98a","#f54020","#c43d18",
+                     "#8a3a2c","#5d3a32","#eb6b4a","#e07a3a","#d49a5a"];
+
+  function pieExternalTooltip(slices) {
+    var currentIndex = -1;
+    var swapTimer = null;
+    function clearSwap() { if (swapTimer) { clearTimeout(swapTimer); swapTimer = null; } }
+    return function(context) {
+      var tip = document.getElementById("vis-custom-tooltip");
+      // Tooltip em hover: congela o conteúdo para permitir rolagem —
+      // o Chart.js continua emitindo eventos conforme o mouse cruza o canvas.
+      if (tip && tip.matches(":hover")) { clearSwap(); return; }
+      var t = context.tooltip;
+      if (!window._visTooltip) return;
+      if (!t || t.opacity === 0 || !t.dataPoints || t.dataPoints.length === 0) {
+        clearSwap();
+        // Delay maior para dar tempo de o mouse alcançar o tooltip.
+        window._visTooltip.scheduleHide(700);
+        return;
+      }
+      var idx = t.dataPoints[0].dataIndex;
+      var slice = slices[idx];
+      if (!slice) { clearSwap(); return; }
+      var rect = context.chart.canvas.getBoundingClientRect();
+      var x = rect.left + t.caretX;
+      var y = rect.top + t.caretY;
+      var visible = tip && tip.classList.contains("visible");
+      if (idx === currentIndex || !visible) {
+        clearSwap();
+        currentIndex = idx;
+        window._visTooltip.showTooltip(slice.tooltipHtml, x, y);
+        return;
+      }
+      // Debounce: só troca o conteúdo se o hover permanecer na nova fatia,
+      // evitando trocas ao cruzar fatias a caminho do tooltip.
+      clearSwap();
+      swapTimer = setTimeout(function() {
+        swapTimer = null;
+        if (tip && tip.matches(":hover")) return;
+        currentIndex = idx;
+        window._visTooltip.showTooltip(slice.tooltipHtml, x, y);
+      }, 350);
+    };
+  }
+
+  function initPie(canvasId, slices) {
+    var el = document.getElementById(canvasId);
+    if (!el || !slices || slices.length === 0) return;
+    var chart = new Chart(el, {
+      type: "pie",
+      data: {
+        labels: slices.map(function(s) { return s.label; }),
+        datasets: [{ data: slices.map(function(s) { return s.share; }),
+                     backgroundColor: CAS_PALETTE.slice(0, slices.length),
+                     borderColor: "#712d23", borderWidth: 1 }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: "right", labels: { font: { size: 10 }, boxWidth: 14 } },
+          tooltip: { enabled: false, external: pieExternalTooltip(slices) },
+        },
+      },
+    });
+    el.addEventListener("mouseleave", function() {
+      if (window._visTooltip) window._visTooltip.scheduleHide(700);
+    });
+    return chart;
+  }
+
+  if (typeof Chart === "undefined") {
+    ["pie-holders", "pie-movers"].forEach(function(id) {
+      var el = document.getElementById(id);
+      if (el) el.parentNode.innerHTML = "<p style='color:#f7d4ca;font-size:.85rem;'>Chart.js indisponível — verifique a conexão com o CDN e recarregue.</p>";
+    });
+    return;
+  }
+  Chart.defaults.color = "#f7d4ca";
+  Chart.defaults.borderColor = "rgba(255,255,255,0.15)";
+  initPie("pie-holders", pieData.holders);
+  initPie("pie-movers", pieData.movers);
+})();
+
 ${GRAPH_3D_INIT_JS}
 ${GRAPH_3D_SEARCH_JS}
 </script>
