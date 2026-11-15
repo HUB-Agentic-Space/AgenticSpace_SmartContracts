@@ -676,6 +676,76 @@ export const PIE_CHARTS_JS = `
  * global `manipTooltips` (HTML gerado server-side por
  * manipulationSignalTooltip) no tooltip rolável `window._visTooltip`.
  */
+// ── Whale threshold filter (combobox) ────────────────────────────────
+
+/**
+ * Percentuais de corte disponíveis no combobox "Wallets acima de X% do
+ * supply" dos dashboards (Concentração, Top Holders). A listagem renderiza
+ * todas as linhas com `data-whale-pct` e o filtro client-side oculta as
+ * abaixo do limiar — sem reload nem reprocessamento.
+ */
+export const WHALE_THRESHOLDS = [5, 10, 15, 20, 30] as const;
+export const WHALE_DEFAULT_PCT = WHALE_THRESHOLDS[0];
+
+/** Menor limiar do combobox — linhas abaixo dele nunca são renderizadas. */
+export function whaleMinThreshold(): number {
+  return WHALE_THRESHOLDS[0];
+}
+
+/**
+ * Monta o `<select id="${id}">` do limiar de whales. As linhas `<tr>` da
+ * tabela alvo devem carregar `data-whale-pct="<pct>"`; WHALE_FILTER_JS
+ * faz o binding do onchange.
+ *
+ * @param opts.tableId id do `<tbody>` que contém as linhas (obrigatório)
+ * @param opts.countId id do `<span>` que exibe a contagem visível (opcional)
+ */
+export function buildWhaleThresholdSelect(
+  id: string,
+  opts: { tableId: string; countId?: string; defaultPct?: number },
+): string {
+  const def = opts.defaultPct ?? WHALE_DEFAULT_PCT;
+  const options = WHALE_THRESHOLDS.map(
+    (p) => `<option value="${p}"${p === def ? " selected" : ""}>${p}%</option>`,
+  ).join("");
+  const countAttr = opts.countId ? ` data-count-id="${escapeHtml(opts.countId)}"` : "";
+  return `<select id="${escapeHtml(id)}" class="whale-threshold" data-table="#${escapeHtml(opts.tableId)}"${countAttr} style="background:var(--bg,#712d23);color:#fff;border:1px solid rgba(255,255,255,.25);border-radius:6px;padding:2px 8px;font-size:.85rem;margin:0 4px;vertical-align:middle;">${options}</select>`;
+}
+
+/**
+ * Binding client-side do combobox de limiar: para cada `<select.whale-threshold>`,
+ * oculta `<tr data-whale-pct>` abaixo do valor, exibe a linha placeholder
+ * `data-whale-empty` quando nenhuma linha passa no corte e atualiza o
+ * contador indicado por `data-count-id`.
+ */
+export const WHALE_FILTER_JS = `
+// ── Filtro de limiar % nas tabelas de whales/holders ──
+(function() {
+  function applyWhaleFilter(sel) {
+    var min = parseFloat(sel.value);
+    var tbody = document.querySelector(sel.getAttribute("data-table") || "");
+    if (!tbody) return;
+    var rows = tbody.querySelectorAll("tr[data-whale-pct]");
+    var shown = 0;
+    rows.forEach(function(r) {
+      var pct = parseFloat(r.getAttribute("data-whale-pct") || "0");
+      var show = pct > min;
+      r.style.display = show ? "" : "none";
+      if (show) shown++;
+    });
+    var empty = tbody.querySelector("tr[data-whale-empty]");
+    if (empty) empty.style.display = shown === 0 ? "" : "none";
+    var countId = sel.getAttribute("data-count-id");
+    var counter = countId ? document.getElementById(countId) : null;
+    if (counter) counter.textContent = String(shown);
+  }
+  document.querySelectorAll("select.whale-threshold").forEach(function(sel) {
+    sel.addEventListener("change", function() { applyWhaleFilter(sel); });
+    applyWhaleFilter(sel); // estado inicial
+  });
+})();
+`;
+
 export const MANIP_TOOLTIP_BIND_JS = `
 // ── Tooltips da tabela de sinais de manipulação ──
 (function() {

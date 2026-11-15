@@ -20,7 +20,7 @@
  *   AI_API_KEY, AI_MODEL — OpenRouter (opcional; cadeia de modelos :free)
  *   OLLAMA_MODEL, OLLAMA_BASE_URL ou OLLAMA_URL — fallback local ao
  *   primeiro erro de crédito/cota (ver scripts/utils/genai_client.ts)
- *   CAS_TOKEN_ADDRESS, POLYGONSCAN_API_KEY, POLYGON_RPC_URL
+ *   CAS_TOKEN_ADDRESS, ETHERSCAN_API_KEY ou POLYGONSCAN_API_KEY, POLYGON_RPC_URL
  */
 
 import { formatUnits } from "agentic_space_commons";
@@ -28,6 +28,12 @@ import * as fs from "fs";
 import * as path from "path";
 import dotenv from "dotenv";
 import { generateCompletion, tryJsonToHtml } from "../utils/genai_client";
+import { scanRequest, fetchTotalSupply, hasApiKey, type TokenTransfer } from "../utils/cas_sync";
+import {
+  WHALE_FILTER_JS,
+  buildWhaleThresholdSelect,
+  whaleMinThreshold,
+} from "../utils/cas_report_charts";
 
 // ── Env loading ───────────────────────────────────────────────────────
 
@@ -37,7 +43,6 @@ dotenv.config({ path: path.join(SC_ROOT, ".env") });
 const DATA_DIR = path.join(SC_ROOT, "data");
 const REPORTS_DIR = path.join(SC_ROOT, "reports");
 const CAS_TOKEN_ADDRESS = process.env.CAS_TOKEN_ADDRESS || "";
-const POLYGONSCAN_API_KEY = process.env.POLYGONSCAN_API_KEY || "";
 const RAPPORT_CERTIFICATE_ADDRESS = process.env.RAPPORT_CERTIFICATE_ADDRESS?.trim() || "";
 const OLD_RAPPORT_CERTIFICATE_ADDRESS = process.env.OLD_RAPPORT_CERTIFICATE_ADDRESS?.trim() || "";
 const POLYGON_RPC_URL = process.env.POLYGON_RPC_URL?.trim() || "https://polygon-rpc.com";
@@ -45,11 +50,6 @@ const POLYGON_RPC_URL = process.env.POLYGON_RPC_URL?.trim() || "https://polygon-
 const TARGET_ACCOUNTS = 1000;
 const DECIMALS = 18;
 const ZERO = "0x0000000000000000000000000000000000000000";
-const CHAIN_ID = 137;
-const API_BASES = [
-  "https://api.polygonscan.com/api",
-  "https://api.etherscan.io/v2/api",
-];
 
 // ── Anonymization levels (LGPD) ──────────────────────────────────────
 
@@ -372,126 +372,7 @@ function loadAirdropCsv(dataDir: string): AirdropRecord[] {
   return records;
 }
 
-// ── Polygonscan API client ─────────────────────────────────────────────
-
-const MAX_RETRIES = 5;
-const REQUEST_TIMEOUT_MS = 15_000;
-const RATE_LIMIT_EXTRA_DELAY_MS = 2_000;
-const RATE_LIMIT_DELAY_MS = 350;
-let pinnedBase: string | null = null;
-
-function isTransientError(status: number, message: string): boolean {
-  if (status === 429) return true;
-  if (status >= 500 && status < 600) return true;
-  const lower = message.toLowerCase();
-  if (lower.includes("rate limit") || lower.includes("max rate") || lower.includes("too many requests")) return true;
-  return false;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function scanRequest(params: Record<string, string>): Promise<unknown> {
-  await sleep(RATE_LIMIT_DELAY_MS);
-
-  let lastError: Error | null = null;
-  const bases = pinnedBase
-    ? [pinnedBase, ...API_BASES.filter((b) => b !== pinnedBase)]
-    : API_BASES;
-
-  for (const base of bases) {
-    const isEtherscanV2 = base.includes("etherscan.io/v2");
-    const apiKey = isEtherscanV2
-      ? (process.env.ETHERSCAN_API_KEY?.trim() || POLYGONSCAN_API_KEY)
-      : POLYGONSCAN_API_KEY;
-    const url = new URL(base);
-    if (isEtherscanV2) url.searchParams.set("chainid", String(CHAIN_ID));
-    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-    url.searchParams.set("apikey", apiKey);
-
-    log("DEBUG", "scanRequest", "Tentando base", {
-      base: base.split("/").pop(),
-      action: params.action,
-      hasApiKey: apiKey.length > 0,
-    });
-
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        const res = await fetchWithTimeout(url.toString(), REQUEST_TIMEOUT_MS);
-        if (!res.ok) {
-          const msg = `HTTP ${res.status}`;
-          if (isTransientError(res.status, msg) && attempt < MAX_RETRIES) {
-            const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
-            const extraDelay = res.status === 429 ? RATE_LIMIT_EXTRA_DELAY_MS : 0;
-            log("WARN", "scanRequest", "Erro transitório, retrying", { attempt, status: res.status, backoffMs: Math.round(backoff + extraDelay) });
-            await sleep(backoff + extraDelay);
-            continue;
-          }
-          throw new Error(msg);
-        }
-        const contentType = res.headers.get("content-type") ?? "";
-        if (!contentType.includes("application/json")) {
-          const textBody = await res.text();
-          const isHtml = textBody.trimStart().startsWith("<");
-          const detail = isHtml ? "Resposta HTML (possível Cloudflare/rate-limit)" : textBody.slice(0, 200);
-          if (isTransientError(res.status, detail) && attempt < MAX_RETRIES) {
-            const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
-            await sleep(backoff + RATE_LIMIT_EXTRA_DELAY_MS);
-            continue;
-          }
-          throw new Error(`Resposta não-JSON: ${detail}`);
-        }
-        const body = (await res.json()) as { status: string; message: string; result: unknown };
-        if (body.status === "1" || (body.status === "0" && body.message === "No transactions found")) {
-          if (pinnedBase === null) pinnedBase = base;
-          return body.result;
-        }
-        const resultStr = typeof body.result === "string" ? body.result : JSON.stringify(body.result);
-        const combinedMsg = `${body.message} ${resultStr}`;
-        if (isTransientError(0, combinedMsg) && attempt < MAX_RETRIES) {
-          const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
-          await sleep(backoff + RATE_LIMIT_EXTRA_DELAY_MS);
-          continue;
-        }
-        throw new Error(`API status=${body.status} message=${body.message} result=${resultStr.slice(0, 200)}`);
-      } catch (err) {
-        const errMsg = (err as Error).message;
-        const isAbort = errMsg.includes("abort") || errMsg.includes("timeout");
-        if ((isAbort || isTransientError(0, errMsg)) && attempt < MAX_RETRIES) {
-          const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
-          await sleep(backoff);
-          continue;
-        }
-        lastError = err as Error;
-        log("WARN", "scanRequest", "Falha na base, tentando fallback", { base, error: errMsg, attempt });
-        break;
-      }
-    }
-  }
-  throw lastError ?? new Error("Todas as bases da API falharam após retries");
-}
-
 // ── On-chain data fetch ────────────────────────────────────────────────
-
-interface TokenTransfer {
-  hash: string;
-  from: string;
-  to: string;
-  value: string;
-  timeStamp: string;
-  blockNumber: string;
-}
 
 async function fetchAllTransfers(tokenAddress: string): Promise<TokenTransfer[]> {
   const MAX_BLOCK = 999_999_999;
@@ -548,15 +429,6 @@ async function fetchAllTransfers(tokenAddress: string): Promise<TokenTransfer[]>
 
   log("OK", "fetchAllTransfers", "Transferências obtidas", { total: allTransfers.length });
   return allTransfers;
-}
-
-async function fetchTotalSupply(tokenAddress: string): Promise<bigint> {
-  const result = (await scanRequest({
-    module: "stats",
-    action: "tokensupply",
-    contractaddress: tokenAddress,
-  })) as string;
-  return BigInt(result);
 }
 
 function computeHolders(transfers: TokenTransfer[], totalSupply: bigint): OnChainHolder[] {
@@ -1009,19 +881,25 @@ function buildHtml(
   const groupLabels = [...metrics.groupDistribution.keys()].map((g) => anonGroupLabel(g, anonLevel));
   const groupData = [...metrics.groupDistribution.values()].map((v) => Math.round(v * 100) / 100);
 
-  const topHolders = metrics.onChainHoldersList.slice(0, 20);
-  const holderRows = topHolders.length
-    ? topHolders
-        .map(
-          (h, i) => `<tr>
+  // Holders >= menor limiar do combobox; WHALE_FILTER_JS filtra por
+  // data-whale-pct conforme o percentual escolhido (5–30%).
+  const topHolders = metrics.onChainHoldersList
+    .map((h) => ({
+      h,
+      pct: totalSupply > 0n ? Number((h.balance * 1000000n) / totalSupply) / 10000 : 0,
+    }))
+    .filter(({ pct }) => pct >= whaleMinThreshold());
+  const holderRows = topHolders
+    .map(
+      ({ h, pct }, i) => `<tr data-whale-pct="${pct}">
       <td data-sort="${i + 1}">${i + 1}</td>
       <td>${anonHolderAddress(h.address, anonLevel)}</td>
       <td data-sort="${toNum(h.balance)}">${fmt(toNum(h.balance))} CAS</td>
-      <td>${totalSupply > 0n ? ((Number((h.balance * 1000000n) / totalSupply) / 10000)).toFixed(4) : "0"}%</td>
+      <td>${pct.toFixed(4)}%</td>
     </tr>`,
-        )
-        .join("")
-    : `<tr><td colspan="4" style="text-align:center;color:#F05F40">Nenhum holder on-chain encontrado</td></tr>`;
+    )
+    .join("")
+    + `<tr data-whale-empty${topHolders.length > 0 ? ' style="display:none"' : ""}><td colspan="4" style="text-align:center;color:#F05F40">Nenhum holder on-chain acima do limiar selecionado</td></tr>`;
 
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -1172,10 +1050,10 @@ ${metrics.certificates ? `
 ` : ""}
 
 <div class="card full" style="margin-top:16px">
-  <h3>🏆 Top 20 Holders On-Chain</h3>
+  <h3>🏆 Holders On-Chain acima de ${buildWhaleThresholdSelect("holders-threshold", { tableId: "holders-tbody", countId: "holders-count" })} do supply — <span id="holders-count">${topHolders.length}</span> carteira(s)</h3>
   <table id="holders-table">
     <thead><tr><th>#</th><th>Endereço</th><th>Saldo (CAS)</th><th>% Supply</th></tr></thead>
-    <tbody>${holderRows}</tbody>
+    <tbody id="holders-tbody">${holderRows}</tbody>
   </table>
 </div>
 
@@ -1241,6 +1119,7 @@ new Chart(document.getElementById('progressChart'), {
     },
   },
 });
+${WHALE_FILTER_JS}
 </script>
 
 </body>
@@ -1276,8 +1155,8 @@ async function main(): Promise<void> {
     log("ERROR", "main", "CAS_TOKEN_ADDRESS não configurado no .env");
     process.exit(1);
   }
-  if (!POLYGONSCAN_API_KEY) {
-    log("ERROR", "main", "POLYGONSCAN_API_KEY não configurado no .env");
+  if (!hasApiKey()) {
+    log("ERROR", "main", "ETHERSCAN_API_KEY/POLYGONSCAN_API_KEY não configurado no .env");
     process.exit(1);
   }
 
