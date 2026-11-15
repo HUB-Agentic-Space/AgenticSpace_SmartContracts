@@ -90,6 +90,7 @@ import {
   getAllAddresses,
   searchAddresses,
   resolveShortAddress,
+  getPoolCreationsByToken,
   type AddressRecord,
 } from "../utils/cas_database";
 import { importAllCsvs } from "../utils/cas_csv_import";
@@ -114,6 +115,13 @@ import {
   severityToPct,
   type PieAlert,
 } from "../utils/cas_report_charts";
+import {
+  buildDexPoolRows,
+  buildDexPoolViews,
+  uniquePairCount,
+  type DexPoolView,
+} from "../utils/cas_dex_pools";
+import { syncPoolCreators } from "../utils/cas_sync";
 import { generateCompletion, tryJsonToHtml } from "../utils/genai_client";
 
 // ── Env loading ───────────────────────────────────────────────────────
@@ -202,6 +210,7 @@ interface MarketData {
   coingeckoVolume24h: number | null;
   dexPairs: DexPair[];
   bestPair: DexPair | null;
+  dexPools: DexPoolView[];
 }
 
 // ── Known address labels (env + SQLite DB) ─────────────────────────────
@@ -364,6 +373,20 @@ function knownLabels(): Map<string, KnownAddress> {
   }
 
   return map;
+}
+
+/**
+ * Extrai um mapa address→label dos knownLabels para enriquecer os
+ * símbolos dos tokens par dos pools DEX (ex.: labels cadastrados via CSV).
+ * Em --anon os labels já vêm vazios de knownLabels(), preservando a
+ * anonimização.
+ */
+function poolTokenLabels(): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [addr, info] of knownLabels()) {
+    if (info.label) out.set(addr, info.label);
+  }
+  return out;
 }
 
 // ── CSV import with NLP-like column detection ─────────────────────────
@@ -1133,9 +1156,14 @@ async function generateAiAnalysis(metrics: Metrics, marketData: MarketData): Pro
   const cgStatus = marketData.coingeckoListed
     ? `Listado (id: ${marketData.coingeckoId}, preço: $${marketData.coingeckoPriceUsd}, market cap: $${marketData.coingeckoMarketCap}, volume 24h: $${marketData.coingeckoVolume24h})`
     : "NÃO listado no CoinGecko";
-  const dexSummary = marketData.dexPairs.length
+  const dexPairsSummary = marketData.dexPairs.length
     ? marketData.dexPairs.map((p) => `${p.dex} (${p.quoteSymbol}): preço $${p.priceUsd.toExponential(2)}, liquidez $${p.liquidityUsd.toFixed(2)}, vol24h $${p.volume24h.toFixed(2)}, txns24h ${p.txns24h.buys}b/${p.txns24h.sells}s`).join(" | ")
-    : "Nenhum par DEX encontrado";
+    : "Nenhum par DEX no DexScreener";
+  const dexPoolsSummary = marketData.dexPools.length
+    ? `Pools on-chain (${marketData.dexPools.length}): ` +
+      marketData.dexPools.map((v) => `${v.dexName} ${v.pairLabel}`).join(", ")
+    : "";
+  const dexSummary = [dexPairsSummary, dexPoolsSummary].filter(Boolean).join(" · ");
 
   const prompt = `Você é um analista sênior de mercado cripto assessorando o admin/criador do token CAS (Polygon Mainnet, supply máximo 10.000.000, cunhado 1.000.000).
 O objetivo do admin é garantir que o CAS NÃO seja percebido como token fake ou de baixa qualidade por agregadores, exchanges e traders.
@@ -1366,12 +1394,13 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marke
   <div class="kpi"><div class="v">$${marketData.coingeckoVolume24h != null ? fmt(marketData.coingeckoVolume24h, 0) : "—"}</div><div class="l">Volume 24h (CoinGecko)</div></div>`
     : `<div class="kpi"><div class="v">—</div><div class="l">CoinGecko: não listado</div></div>`;
 
+  const totalPairs = uniquePairCount(marketData.dexPairs, marketData.dexPools);
   const dexKpis = marketData.bestPair
     ? `<div class="kpi"><div class="v">$${bestPrice!.toExponential(2)}</div><div class="l">Preço <span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span> (USD)</div></div>
   <div class="kpi"><div class="v">$${fmt(totalDexLiquidity, 2)}</div><div class="l">Liquidez total <span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span> (USD)</div></div>
   <div class="kpi"><div class="v">$${fmt(totalDexVolume, 2)}</div><div class="l">Volume 24h <span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span> (USD)</div></div>
-  <div class="kpi"><div class="v">${marketData.dexPairs.length}</div><div class="l">Pares <span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span> ativos</div></div>`
-    : `<div class="kpi"><div class="v">—</div><div class="l"><span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span>: sem pares encontrados</div></div>`;
+  <div class="kpi"><div class="v">${totalPairs}</div><div class="l">Pares/pools <span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span> (DexScreener + on-chain)</div></div>`
+    : `<div class="kpi"><div class="v">${totalPairs > 0 ? totalPairs : "—"}</div><div class="l">${totalPairs > 0 ? "Pares/pools <span class=\"term-tip\" data-tip=\"Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.\">DEX</span> descobertos on-chain" : "<span class=\"term-tip\" data-tip=\"Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.\">DEX</span>: sem pares encontrados"}</div></div>`;
 
   const dexRows = marketData.dexPairs.length
     ? marketData.dexPairs
@@ -1386,7 +1415,9 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marke
       <td>$${p.fdv > 0 ? fmt(p.fdv, 0) : "—"}</td>
     </tr>`)
         .join("")
-    : `<tr><td colspan=\"7\" style=\"text-align:center;color:#712d23\">Nenhum par DEX encontrado no DexScreener</td></tr>`;
+    : `<tr><td colspan=\"7\" style=\"text-align:center;color:#712d23\">Nenhum par DEX encontrado no DexScreener${marketData.dexPools.length > 0 ? " — veja os pools descobertos on-chain abaixo" : ""}</td></tr>`;
+
+  // ── Pools DEX descobertos on-chain (pool_creations via syncPoolCreators) ──
 
   // ── Transfer graph data (for vis.js network) ──
   const holderBalanceMap = new Map<string, { balance: bigint; pct: number }>();
@@ -1495,6 +1526,16 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marke
     if (!anonNames.has(lower)) anonNames.set(lower, `Anon ${anonNames.size + 1}`);
     return anonNames.get(lower);
   };
+
+  // ── Pools DEX descobertos on-chain (pool_creations via syncPoolCreators) ──
+  const poolCreatorCell = (addr: string): string => {
+    const lower = addr.toLowerCase();
+    const anon = anonFor(addr);
+    if (anon) return `<code>${escapeHtml(anon)}</code>`;
+    const display = labels.get(lower)?.label || shortAddr(addr);
+    return polyScanLink(addr, display);
+  };
+  const dexPoolRows = buildDexPoolRows(marketData.dexPools, poolCreatorCell);
 
   // Alertas por endereço para as fatias da pizza (score heurístico, sem GNN)
   const nodeAlertMap = new Map<string, PieAlert[]>();
@@ -1758,9 +1799,18 @@ ${GRAPH_3D_CDN}
     ${dexKpis}
   </div>
   <div class="card full">
+    <h3>Pares com dados de mercado (DexScreener)</h3>
     <table>
       <thead><tr><th><span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span></th><th>Quote</th><th>Preço (USD)</th><th>Liquidez (USD)</th><th>Volume 24h (USD)</th><th>Txns 24h (B/S)</th><th><span class="term-tip" data-tip="Fully Diluted Valuation — valor de mercado se todo o supply estivesse em circulação ao preço atual. Diferente do market cap, considera o supply máximo.">FDV</span> (USD)</th></tr></thead>
       <tbody>${dexRows}</tbody>
+    </table>
+  </div>
+  <div class="card full" style="margin-top:16px">
+    <h3>Pools <span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span> descobertos on-chain</h3>
+    <p style="font-size:.8rem;color:#f7d4ca;margin:4px 0 10px">Detectados via eventos de criação de pool (PairCreated/PoolCreated/Initialize) nas factories — mesmo procedimento do relatório de grafo. Inclui Uniswap V2/V3/V4, QuickSwap (V2 e V3/Algebra), SushiSwap, ApeSwap e Dfyn.</p>
+    <table>
+      <thead><tr><th><span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span></th><th>Par</th><th>Pool / PoolId</th><th>Criador</th><th>Criado em</th><th>Tx</th></tr></thead>
+      <tbody>${dexPoolRows}</tbody>
     </table>
   </div>
 </div>
@@ -2451,6 +2501,22 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // ── Pool creators on-chain (mesmo procedimento do analysis:cas:graph) ──
+  if (!useDbOnly && process.env.POLYGONSCAN_API_KEY?.trim()) {
+    try {
+      await syncPoolCreators(tokenAddress);
+    } catch (err) {
+      log("WARN", "main", "Falha ao sincronizar pool creators (não bloqueia)", { error: (err as Error).message });
+    }
+  }
+  const dexPools = buildDexPoolViews(getPoolCreationsByToken(tokenAddress), tokenAddress, poolTokenLabels());
+  if (dexPools.length > 0) {
+    log("OK", "main", "Pools DEX carregados do banco", {
+      pools: dexPools.length,
+      dexes: [...new Set(dexPools.map((p) => p.dexName))].join(", "),
+    });
+  }
+
   // ── Process market data (already fetched concurrently in API mode) ──
   let marketData: MarketData;
   if (!useDbOnly && cgStatus && dexData) {
@@ -2464,6 +2530,7 @@ async function main(): Promise<void> {
       coingeckoVolume24h: cg?.volume24h ?? null,
       dexPairs: dex?.dexPairs ?? [],
       bestPair: dex?.bestPair ?? null,
+      dexPools,
     };
   } else {
     log("INFO", "main", "Buscando dados de mercado (CoinGecko + DexScreener)");
@@ -2479,11 +2546,13 @@ async function main(): Promise<void> {
       coingeckoVolume24h: cgResult.status === "fulfilled" ? cgResult.value.volume24h : null,
       dexPairs: dexResult.status === "fulfilled" ? dexResult.value.dexPairs : [],
       bestPair: dexResult.status === "fulfilled" ? dexResult.value.bestPair : null,
+      dexPools,
     };
   }
   log("OK", "main", "Dados de mercado consolidados", {
     coingeckoListed: marketData.coingeckoListed,
     dexPairs: marketData.dexPairs.length,
+    dexPools: marketData.dexPools.length,
     bestDex: marketData.bestPair?.dex,
   });
 
