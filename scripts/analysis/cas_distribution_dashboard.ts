@@ -1,8 +1,8 @@
 /**
  * CAS Distribution Dashboard
  * --------------------------
- * Analisa a distribuição do token CAS na Polygon Mainnet usando a API do
- * Polygonscan (Etherscan V2) e/ou dados do banco SQLite local, calcula
+ * Analisa a distribuição do token CAS na Polygon Mainnet usando a API
+ * Etherscan V2 (multichain) e/ou dados do banco SQLite local, calcula
  * métricas de concentração (Gini, HHI, Top-N, holders > 30%), gera sugestões
  * textuais via GenAI (OpenRouter) e abre um dashboard HTML rico em gráficos.
  *
@@ -65,7 +65,8 @@
  *     instalado primeiro (OLLAMA_MODEL/OLLAMA_BASE_URL/OLLAMA_URL).
  *
  * Requisitos de ambiente:
- *   smartcontracts/.env : POLYGONSCAN_API_KEY, CAS_TOKEN_ADDRESS (+ labels)
+ *   smartcontracts/.env : ETHERSCAN_API_KEY ou POLYGONSCAN_API_KEY,
+ *                         CAS_TOKEN_ADDRESS (+ labels)
  *   backend/.env        : AI_API_KEY, AI_MODEL (OpenRouter),
  *                         OLLAMA_MODEL, OLLAMA_BASE_URL ou OLLAMA_URL (fallback local)
  */
@@ -121,7 +122,13 @@ import {
   uniquePairCount,
   type DexPoolView,
 } from "../utils/cas_dex_pools";
-import { syncPoolCreators } from "../utils/cas_sync";
+import {
+  syncTransfers,
+  syncPoolCreators,
+  fetchTotalSupply,
+  hasApiKey,
+  type TokenTransfer,
+} from "../utils/cas_sync";
 import { generateCompletion, tryJsonToHtml } from "../utils/genai_client";
 
 // ── Env loading ───────────────────────────────────────────────────────
@@ -148,15 +155,6 @@ function log(level: LogLevel, fn: string, message: string, params?: Record<strin
 }
 
 // ── Types ─────────────────────────────────────────────────────────────
-
-interface TokenTransfer {
-  hash: string;
-  from: string;
-  to: string;
-  value: string;
-  timeStamp: string;
-  blockNumber: string;
-}
 
 interface Holder {
   address: string;
@@ -623,31 +621,10 @@ function loadAirdropPartners(
   return partners;
 }
 
-// ── Polygonscan / Etherscan V2 API ────────────────────────────────────
-
-const CHAIN_ID = 137;
-const API_BASES = [
-  "https://api.polygonscan.com/api",
-  "https://api.etherscan.io/v2/api",
-];
-
-const MAX_RETRIES = 5;
-const REQUEST_TIMEOUT_MS = 15_000;
-const RATE_LIMIT_EXTRA_DELAY_MS = 2_000;
-const RATE_LIMIT_DELAY_MS = 350;
-let pinnedBase: string | null = null;
-
-function isTransientError(status: number, message: string): boolean {
-  if (status === 429) return true;
-  if (status >= 500 && status < 600) return true;
-  const lower = message.toLowerCase();
-  if (lower.includes("rate limit") || lower.includes("max rate") || lower.includes("too many requests")) return true;
-  return false;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
+// ── HTTP helper ───────────────────────────────────────────────────────
+// Fetch com timeout via AbortController — usado pelas integrações de
+// mercado (CoinGecko, DexScreener). As chamadas à API Etherscan V2
+// (tokentx, tokensupply, eth_call) vivem em scripts/utils/cas_sync.ts.
 
 async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
   const controller = new AbortController();
@@ -659,240 +636,6 @@ async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Respons
   }
 }
 
-async function scanRequest(params: Record<string, string>): Promise<unknown> {
-  await sleep(RATE_LIMIT_DELAY_MS);
-
-  let lastError: Error | null = null;
-  const bases = pinnedBase
-    ? [pinnedBase, ...API_BASES.filter(b => b !== pinnedBase)]
-    : API_BASES;
-
-  for (const base of bases) {
-    const isEtherscanV2 = base.includes("etherscan.io/v2");
-    const apiKey = isEtherscanV2
-      ? (process.env.ETHERSCAN_API_KEY?.trim() || process.env.POLYGONSCAN_API_KEY?.trim() || "")
-      : (process.env.POLYGONSCAN_API_KEY?.trim() || "");
-    const url = new URL(base);
-    if (isEtherscanV2) url.searchParams.set("chainid", String(CHAIN_ID));
-    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-    url.searchParams.set("apikey", apiKey);
-
-    log("DEBUG", "scanRequest", "Tentando base", {
-      base: base.split("/").pop(),
-      action: params.action,
-      hasApiKey: apiKey.length > 0,
-      keySource: isEtherscanV2
-        ? (process.env.ETHERSCAN_API_KEY?.trim() ? "ETHERSCAN_API_KEY" : "POLYGONSCAN_API_KEY")
-        : "POLYGONSCAN_API_KEY",
-    });
-
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        const res = await fetchWithTimeout(url.toString(), REQUEST_TIMEOUT_MS);
-        if (!res.ok) {
-          const msg = `HTTP ${res.status}`;
-          if (isTransientError(res.status, msg) && attempt < MAX_RETRIES) {
-            const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
-            const extraDelay = res.status === 429 ? RATE_LIMIT_EXTRA_DELAY_MS : 0;
-            log("WARN", "scanRequest", "Erro transitório, retrying", {
-              base: base.split("/").pop(),
-              action: params.action,
-              attempt,
-              status: res.status,
-              backoffMs: Math.round(backoff + extraDelay),
-            });
-            await sleep(backoff + extraDelay);
-            continue;
-          }
-          throw new Error(msg);
-        }
-        const contentType = res.headers.get("content-type") ?? "";
-        if (!contentType.includes("application/json")) {
-          const textBody = await res.text();
-          const isHtml = textBody.trimStart().startsWith("<");
-          const detail = isHtml
-            ? "Resposta HTML (possível Cloudflare/rate-limit)"
-            : textBody.slice(0, 200);
-          if (isTransientError(res.status, detail) && attempt < MAX_RETRIES) {
-            const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
-            log("WARN", "scanRequest", "Resposta não-JSON, retrying", {
-              base: base.split("/").pop(),
-              action: params.action,
-              attempt,
-              contentType,
-              httpStatus: res.status,
-              backoffMs: Math.round(backoff + RATE_LIMIT_EXTRA_DELAY_MS),
-            });
-            await sleep(backoff + RATE_LIMIT_EXTRA_DELAY_MS);
-            continue;
-          }
-          throw new Error(`Resposta não-JSON (${contentType}): ${detail}`);
-        }
-        const body = (await res.json()) as { status: string; message: string; result: unknown };
-        if (body.status === "1" || (body.status === "0" && body.message === "No transactions found")) {
-          if (pinnedBase === null) pinnedBase = base;
-          return body.result;
-        }
-        const resultStr = typeof body.result === "string" ? body.result : JSON.stringify(body.result);
-        const combinedMsg = `${body.message} ${resultStr}`;
-        if (isTransientError(0, combinedMsg) && attempt < MAX_RETRIES) {
-          const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
-          log("WARN", "scanRequest", "API rate limited, retrying", {
-            base: base.split("/").pop(),
-            action: params.action,
-            attempt,
-            message: body.message,
-            result: resultStr.slice(0, 150),
-            backoffMs: Math.round(backoff + RATE_LIMIT_EXTRA_DELAY_MS),
-          });
-          await sleep(backoff + RATE_LIMIT_EXTRA_DELAY_MS);
-          continue;
-        }
-        throw new Error(`API status=${body.status} message=${body.message} result=${resultStr.slice(0, 200)}`);
-      } catch (err) {
-        const errMsg = (err as Error).message;
-        const isAbort = errMsg.includes("abort") || errMsg.includes("timeout");
-        if ((isAbort || isTransientError(0, errMsg)) && attempt < MAX_RETRIES) {
-          const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
-          log("WARN", "scanRequest", "Erro transitório/timeout, retrying", {
-            base: base.split("/").pop(),
-            action: params.action,
-            attempt,
-            error: errMsg,
-            backoffMs: Math.round(backoff),
-          });
-          await sleep(backoff);
-          continue;
-        }
-        lastError = err as Error;
-        log("WARN", "scanRequest", "Falha na base, tentando fallback", {
-          base,
-          action: params.action,
-          error: errMsg,
-          attempt,
-        });
-        break;
-      }
-    }
-  }
-  throw lastError ?? new Error("Todas as bases da API falharam após retries");
-}
-
-/**
- * Sync incremental: busca apenas transferências novas do Polygonscan
- * e armazena no SQLite. Retorna todas as transferências do banco.
- */
-async function fetchAllTransfers(tokenAddress: string): Promise<TokenTransfer[]> {
-  const MAX_BLOCK = 999_999_999;
-  const PAGE_SIZE = 10_000;
-
-  getDB();
-
-  const lastSyncedBlock = getLastBlockNumber();
-  const dbCount = getTransactionCount();
-  log("INFO", "fetchAllTransfers", "Sync incremental via paginação sequencial", {
-    token: tokenAddress, dbTxCount: dbCount, lastSyncedBlock,
-  });
-
-  const startBlock = lastSyncedBlock > 0 ? lastSyncedBlock + 1 : 0;
-  let currentStartBlock = startBlock;
-  let newCount = 0;
-
-  for (;;) {
-    let result: TokenTransfer[] | string;
-    try {
-      result = await scanRequest({
-        module: "account",
-        action: "tokentx",
-        contractaddress: tokenAddress,
-        startblock: String(currentStartBlock),
-        endblock: String(MAX_BLOCK),
-        offset: String(PAGE_SIZE),
-        sort: "asc",
-      }) as TokenTransfer[] | string;
-    } catch (err) {
-      log("ERROR", "fetchAllTransfers", "Falha ao buscar página após retries", {
-        startBlock: currentStartBlock,
-        error: (err as Error).message,
-        newCount,
-      });
-      if (dbCount + newCount > 0) {
-        log("WARN", "fetchAllTransfers", "Prosseguindo com dados parciais", { dbCount, newCount });
-        break;
-      }
-      throw err;
-    }
-
-    if (!Array.isArray(result) || result.length === 0) break;
-
-    for (const t of result) {
-      const isMint = t.from.toLowerCase() === ZERO ? 1 : 0;
-      const isBurn = t.to.toLowerCase() === ZERO ? 1 : 0;
-
-      insertTransaction({
-        tx_hash: t.hash,
-        block_number: parseInt(t.blockNumber, 10),
-        timestamp: parseInt(t.timeStamp, 10),
-        from_address: t.from,
-        to_address: t.to,
-        value: t.value,
-        is_mint: isMint,
-        is_burn: isBurn,
-        label: "",
-        description: "",
-      });
-
-      if (!isMint) upsertAddress(t.from, "", "eoa", false);
-      if (!isBurn) upsertAddress(t.to, "", "eoa", false);
-    }
-
-    newCount += result.length;
-    const lastTxBlock = parseInt(result[result.length - 1].blockNumber, 10);
-
-    log("DEBUG", "fetchAllTransfers", "Página sincronizada", {
-      startBlock: currentStartBlock,
-      count: result.length,
-      newCount,
-      lastTxBlock,
-    });
-
-    if (result.length < PAGE_SIZE) break;
-    currentStartBlock = lastTxBlock + 1;
-  }
-
-  if (newCount > 0) {
-    recalculateAllAddressStats();
-    setSyncState("last_sync", new Date().toISOString());
-  }
-
-  const totalCount = getTransactionCount();
-  log("OK", "fetchAllTransfers", "Sync concluído", {
-    newTx: newCount,
-    totalDbTx: totalCount,
-  });
-
-  const dbTxs = getAllTransactionsFromDB();
-  const transfers = dbTxs.map((t) => ({
-    hash: t.tx_hash,
-    from: t.from_address,
-    to: t.to_address,
-    value: t.value,
-    timeStamp: String(t.timestamp),
-    blockNumber: String(t.block_number),
-  }));
-
-  transfers.sort((a, b) => parseInt(a.blockNumber, 10) - parseInt(b.blockNumber, 10));
-  return transfers;
-}
-
-async function fetchTotalSupply(tokenAddress: string): Promise<bigint> {
-  const result = (await scanRequest({
-    module: "stats",
-    action: "tokensupply",
-    contractaddress: tokenAddress,
-  })) as string;
-  return BigInt(result);
-}
 
 // ── CoinGecko API ─────────────────────────────────────────────────────
 
@@ -2410,7 +2153,7 @@ async function main(): Promise<void> {
     log("OK", "main", "Transações carregadas do SQLite", { count: transfers.length });
 
     // Total supply still needs API or can be approximated from DB
-    if (process.env.POLYGONSCAN_API_KEY?.trim()) {
+    if (hasApiKey()) {
       try {
         totalSupply = await fetchTotalSupply(tokenAddress);
       } catch (err) {
@@ -2419,8 +2162,8 @@ async function main(): Promise<void> {
     }
   } else {
     // ── Mode: API sync + DB cache ──
-    if (!process.env.POLYGONSCAN_API_KEY?.trim()) {
-      log("ERROR", "main", "POLYGONSCAN_API_KEY ausente em smartcontracts/.env. Use --use-db para modo apenas banco.");
+    if (!hasApiKey()) {
+      log("ERROR", "main", "ETHERSCAN_API_KEY/POLYGONSCAN_API_KEY ausente em smartcontracts/.env. Use --use-db para modo apenas banco.");
       closeDB();
       process.exit(1);
     }
@@ -2428,7 +2171,7 @@ async function main(): Promise<void> {
     log("INFO", "main", "Sync incremental + totalSupply + dados de mercado concorrentemente");
 
     const [transfersResult, supplyResult, cgResult, dexResult] = await Promise.allSettled([
-      fetchAllTransfers(tokenAddress),
+      syncTransfers(tokenAddress),
       fetchTotalSupply(tokenAddress),
       fetchCoinGeckoStatus(tokenAddress),
       fetchDexScreenerData(tokenAddress),
@@ -2502,7 +2245,7 @@ async function main(): Promise<void> {
   }
 
   // ── Pool creators on-chain (mesmo procedimento do analysis:cas:graph) ──
-  if (!useDbOnly && process.env.POLYGONSCAN_API_KEY?.trim()) {
+  if (!useDbOnly && hasApiKey()) {
     try {
       await syncPoolCreators(tokenAddress);
     } catch (err) {
