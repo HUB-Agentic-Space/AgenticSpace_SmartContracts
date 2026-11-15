@@ -3,11 +3,14 @@
  * via Etherscan V2 API (multichain, chainid=137) para o banco SQLite local.
  *
  * Funções:
- *   - scanRequest: requisição com retry, fallback de base e rate-limit
+ *   - scanRequest: requisição com retry progressivo, fallback de base,
+ *     rate-limit, Retry-After e circuit breaker de bases mortas
+ *   - fetchTotalSupply: tokensupply com fallback eth_call via scan e RPC direto
  *   - syncTransfers: sync incremental de tokentx, upsert de endereços
  *   - syncPoolCreators: descoberta de pool creators via logs de PairCreated
  *
- * Padrões: Adapter (API → SQLite), Strategy (múltiplas bases com fallback)
+ * Padrões: Adapter (API → SQLite), Strategy (múltiplas bases com fallback),
+ * Circuit Breaker (bases marcadas como mortas são puladas no processo)
  */
 
 import * as path from "path";
@@ -68,11 +71,33 @@ const API_BASES = [
 
 const MAX_RETRIES = 5;
 const REQUEST_TIMEOUT_MS = 15_000;
+const REQUEST_TIMEOUT_STEP_MS = 15_000;
+const REQUEST_TIMEOUT_MAX_MS = 60_000;
 const RATE_LIMIT_EXTRA_DELAY_MS = 2_000;
 const RATE_LIMIT_DELAY_MS = 350;
+const RETRY_AFTER_MAX_MS = 60_000;
 let pinnedBase: string | null = null;
 
+// Bases que retornaram falha determinística (página HTML/redirect em
+// endpoint de API) são marcadas como mortas e puladas pelo resto do
+// processo — evita que chamadas concorrentes a frio repitam o custo de
+// uma base fora do ar antes de pinnedBase ser fixado.
+const deadBases = new Set<string>();
+
 const ZERO = "0x0000000000000000000000000000000000000000";
+
+// Códigos de erro de rede (undici/Node) que indicam falha transitória.
+// fetch() encapsula-os em `TypeError: fetch failed` com `cause.code` —
+// a mensagem sozinha ("fetch failed") não permite classificação.
+const TRANSIENT_NET_CODES = new Set([
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_SOCKET",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+]);
 
 function isTransientError(status: number, message: string): boolean {
   if (status === 429) return true;
@@ -82,27 +107,73 @@ function isTransientError(status: number, message: string): boolean {
   return false;
 }
 
+function isTransientNetError(err: unknown): boolean {
+  const msg = (err as Error)?.message?.toLowerCase() ?? "";
+  if (msg.includes("abort") || msg.includes("timeout")) return true;
+  const code = (err as { cause?: { code?: string } })?.cause?.code;
+  if (code && TRANSIENT_NET_CODES.has(code)) return true;
+  return isTransientError(0, msg);
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
+// Timeout progressivo por tentativa: um abort de 15s indica endpoint
+// lento — retry com o mesmo orçamento tende a falhar de novo.
+function attemptTimeout(attempt: number): number {
+  return Math.min(REQUEST_TIMEOUT_MS + (attempt - 1) * REQUEST_TIMEOUT_STEP_MS, REQUEST_TIMEOUT_MAX_MS);
+}
+
+// Honra o header Retry-After (segundos ou data HTTP) quando presente —
+// usado como piso do backoff em 429 e respostas não-JSON (challenge).
+function retryAfterMs(res: Response): number {
+  const header = res.headers.get("retry-after");
+  if (!header) return 0;
+  const secs = Number(header);
+  if (!Number.isNaN(secs)) return Math.min(Math.max(secs, 0) * 1000, RETRY_AFTER_MAX_MS);
+  const date = Date.parse(header);
+  if (!Number.isNaN(date)) return Math.min(Math.max(date - Date.now(), 0), RETRY_AFTER_MAX_MS);
+  return 0;
+}
+
+function markBaseDead(base: string, reason: string): void {
+  deadBases.add(base);
+  if (pinnedBase === base) pinnedBase = null;
+  log("WARN", "scanRequest", "Base marcada como indisponível", { base, reason });
+}
+
+/**
+ * Reseta o estado interno do cliente scan (base pinada + circuit breaker).
+ * Exposto para testes unitários — não usar em fluxo normal.
+ */
+export function resetScanApiState(): void {
+  pinnedBase = null;
+  deadBases.clear();
+}
+
+async function fetchWithTimeout(url: string, timeoutMs: number, init?: RequestInit): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { signal: controller.signal });
+    return await fetch(url, { ...init, signal: controller.signal });
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function scanRequest(params: Record<string, string>): Promise<unknown> {
+export async function scanRequest(params: Record<string, string>): Promise<unknown> {
   await sleep(RATE_LIMIT_DELAY_MS);
 
   let lastError: Error | null = null;
-  const bases = pinnedBase
-    ? [pinnedBase, ...API_BASES.filter((b) => b !== pinnedBase)]
-    : API_BASES;
+  const liveBases = API_BASES.filter((b) => !deadBases.has(b));
+  const bases = pinnedBase && !deadBases.has(pinnedBase)
+    ? [pinnedBase, ...liveBases.filter((b) => b !== pinnedBase)]
+    : liveBases;
+
+  if (bases.length === 0) {
+    throw new Error("Todas as bases da API estão indisponíveis (dead bases)");
+  }
 
   for (const base of bases) {
     const isEtherscanV2 = base.includes("etherscan.io/v2");
@@ -122,12 +193,22 @@ async function scanRequest(params: Record<string, string>): Promise<unknown> {
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
-        const res = await fetchWithTimeout(url.toString(), REQUEST_TIMEOUT_MS);
+        const res = await fetchWithTimeout(url.toString(), attemptTimeout(attempt));
         if (!res.ok) {
           const msg = `HTTP ${res.status}`;
           if (isTransientError(res.status, msg) && attempt < MAX_RETRIES) {
-            const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
+            const backoff = Math.max(
+              Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400,
+              retryAfterMs(res),
+            );
             const extraDelay = res.status === 429 ? RATE_LIMIT_EXTRA_DELAY_MS : 0;
+            log("WARN", "scanRequest", "Erro transitório, retrying", {
+              base: base.split("/").pop(),
+              action: params.action,
+              attempt,
+              status: res.status,
+              backoffMs: Math.round(backoff + extraDelay),
+            });
             await sleep(backoff + extraDelay);
             continue;
           }
@@ -139,10 +220,24 @@ async function scanRequest(params: Record<string, string>): Promise<unknown> {
           const isHtml = textBody.trimStart().startsWith("<");
           const detail = isHtml ? "Resposta HTML" : textBody.slice(0, 200);
           if (isTransientError(res.status, detail) && attempt < MAX_RETRIES) {
-            const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
+            const backoff = Math.max(
+              Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400,
+              retryAfterMs(res),
+            );
+            log("WARN", "scanRequest", "Resposta não-JSON, retrying", {
+              base: base.split("/").pop(),
+              action: params.action,
+              attempt,
+              contentType,
+              backoffMs: Math.round(backoff + RATE_LIMIT_EXTRA_DELAY_MS),
+            });
             await sleep(backoff + RATE_LIMIT_EXTRA_DELAY_MS);
             continue;
           }
+          // Resposta definitiva não-API (página HTML de redirect/endpoint
+          // descontinuado): marca a base como morta para o resto do
+          // processo em vez de repeti-la a cada chamada.
+          if (isHtml) markBaseDead(base, `Resposta não-JSON (${contentType})`);
           throw new Error(`Resposta não-JSON (${contentType}): ${detail}`);
         }
         const body = (await res.json()) as {
@@ -181,24 +276,122 @@ async function scanRequest(params: Record<string, string>): Promise<unknown> {
         const combinedMsg = `${apiMessage} ${resultStr}`;
         if (isTransientError(0, combinedMsg) && attempt < MAX_RETRIES) {
           const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
+          log("WARN", "scanRequest", "API rate limited, retrying", {
+            base: base.split("/").pop(),
+            action: params.action,
+            attempt,
+            message: apiMessage,
+            backoffMs: Math.round(backoff + RATE_LIMIT_EXTRA_DELAY_MS),
+          });
           await sleep(backoff + RATE_LIMIT_EXTRA_DELAY_MS);
           continue;
         }
         throw new Error(`API status=${body.status} message=${apiMessage} result=${resultStr.slice(0, 200)}`);
       } catch (err) {
         const errMsg = (err as Error).message;
-        const isAbort = errMsg.includes("abort") || errMsg.includes("timeout");
-        if ((isAbort || isTransientError(0, errMsg)) && attempt < MAX_RETRIES) {
+        if (isTransientNetError(err) && attempt < MAX_RETRIES) {
           const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
+          log("WARN", "scanRequest", "Erro transitório/timeout, retrying", {
+            base: base.split("/").pop(),
+            action: params.action,
+            attempt,
+            timeoutMs: attemptTimeout(attempt),
+            error: errMsg,
+            backoffMs: Math.round(backoff),
+          });
           await sleep(backoff);
           continue;
         }
         lastError = err as Error;
+        log("WARN", "scanRequest", "Falha na base, tentando fallback", {
+          base,
+          action: params.action,
+          error: errMsg,
+          attempt,
+        });
         break;
       }
     }
   }
   throw lastError ?? new Error("Todas as bases da API falharam após retries");
+}
+
+// ── Total supply com fallback ─────────────────────────────────────────
+
+// Seletor ABI de totalSupply() — ERC-20, uint256 sem argumentos.
+const TOTAL_SUPPLY_SELECTOR = "0x18160ddd";
+
+/**
+ * Chamada JSON-RPC direta a um endpoint RPC — caminho independente do
+ * scan, usado como último fallback. Retry curto com backoff exponencial.
+ */
+async function rpcCall(rpcUrl: string, method: string, params: unknown[]): Promise<unknown> {
+  let lastError: Error | null = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await fetchWithTimeout(rpcUrl, attemptTimeout(attempt), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as { result?: unknown; error?: { code?: number; message?: string } };
+      if (body.error) throw new Error(`RPC ${body.error.code ?? "?"}: ${body.error.message ?? "erro desconhecido"}`);
+      return body.result;
+    } catch (err) {
+      lastError = err as Error;
+      if (isTransientNetError(err) && attempt < 3) {
+        await sleep(Math.min(1000 * Math.pow(2, attempt - 1), 8_000) + Math.random() * 400);
+        continue;
+      }
+      throw lastError;
+    }
+  }
+  throw lastError ?? new Error("rpcCall falhou após retries");
+}
+
+/**
+ * Obtém o totalSupply do token com cadeia de fallback:
+ *   1. stats/tokensupply (Etherscan V2);
+ *   2. proxy/eth_call totalSupply() (mesma API, envelope JSON-RPC);
+ *   3. eth_call direto ao POLYGON_RPC_URL — caminho independente do scan.
+ */
+export async function fetchTotalSupply(tokenAddress: string): Promise<bigint> {
+  try {
+    const result = (await scanRequest({
+      module: "stats",
+      action: "tokensupply",
+      contractaddress: tokenAddress,
+    })) as string;
+    return BigInt(result);
+  } catch (err) {
+    log("WARN", "fetchTotalSupply", "tokensupply falhou, tentando eth_call via scan", {
+      error: (err as Error).message,
+    });
+  }
+
+  try {
+    const result = (await scanRequest({
+      module: "proxy",
+      action: "eth_call",
+      to: tokenAddress,
+      data: TOTAL_SUPPLY_SELECTOR,
+      tag: "latest",
+    })) as string;
+    return BigInt(result);
+  } catch (err) {
+    log("WARN", "fetchTotalSupply", "eth_call via scan falhou, tentando RPC direto", {
+      error: (err as Error).message,
+    });
+  }
+
+  const rpcUrl = process.env.POLYGON_RPC_URL?.trim() || "https://polygon.drpc.org";
+  const result = (await rpcCall(rpcUrl, "eth_call", [
+    { to: tokenAddress, data: TOTAL_SUPPLY_SELECTOR },
+    "latest",
+  ])) as string;
+  log("OK", "fetchTotalSupply", "Total supply via RPC direto", { rpcUrl: new URL(rpcUrl).hostname });
+  return BigInt(result);
 }
 
 // ── Transfer sync ─────────────────────────────────────────────────────
@@ -563,8 +756,10 @@ export async function syncPoolCreators(tokenAddress: string): Promise<void> {
 }
 
 /**
- * Verifica se a API key está configurada para permitir sync.
+ * Verifica se há uma API key configurada para o endpoint Etherscan V2
+ * (a chave V2 é unificada — ETHERSCAN_API_KEY ou POLYGONSCAN_API_KEY
+ * servem, pois as keys do Polygonscan migraram para o Etherscan).
  */
 export function hasApiKey(): boolean {
-  return !!process.env.POLYGONSCAN_API_KEY?.trim();
+  return !!(process.env.ETHERSCAN_API_KEY?.trim() || process.env.POLYGONSCAN_API_KEY?.trim());
 }
