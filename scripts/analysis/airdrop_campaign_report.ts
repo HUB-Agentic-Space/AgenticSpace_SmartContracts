@@ -29,6 +29,11 @@ import * as path from "path";
 import dotenv from "dotenv";
 import { generateCompletion, tryJsonToHtml } from "../utils/genai_client";
 import { scanRequest, fetchTotalSupply, hasApiKey, type TokenTransfer } from "../utils/cas_sync";
+import {
+  WHALE_FILTER_JS,
+  buildWhaleThresholdSelect,
+  whaleMinThreshold,
+} from "../utils/cas_report_charts";
 
 // ── Env loading ───────────────────────────────────────────────────────
 
@@ -876,19 +881,25 @@ function buildHtml(
   const groupLabels = [...metrics.groupDistribution.keys()].map((g) => anonGroupLabel(g, anonLevel));
   const groupData = [...metrics.groupDistribution.values()].map((v) => Math.round(v * 100) / 100);
 
-  const topHolders = metrics.onChainHoldersList.slice(0, 20);
-  const holderRows = topHolders.length
-    ? topHolders
-        .map(
-          (h, i) => `<tr>
+  // Holders >= menor limiar do combobox; WHALE_FILTER_JS filtra por
+  // data-whale-pct conforme o percentual escolhido (5–30%).
+  const topHolders = metrics.onChainHoldersList
+    .map((h) => ({
+      h,
+      pct: totalSupply > 0n ? Number((h.balance * 1000000n) / totalSupply) / 10000 : 0,
+    }))
+    .filter(({ pct }) => pct >= whaleMinThreshold());
+  const holderRows = topHolders
+    .map(
+      ({ h, pct }, i) => `<tr data-whale-pct="${pct}">
       <td data-sort="${i + 1}">${i + 1}</td>
       <td>${anonHolderAddress(h.address, anonLevel)}</td>
       <td data-sort="${toNum(h.balance)}">${fmt(toNum(h.balance))} CAS</td>
-      <td>${totalSupply > 0n ? ((Number((h.balance * 1000000n) / totalSupply) / 10000)).toFixed(4) : "0"}%</td>
+      <td>${pct.toFixed(4)}%</td>
     </tr>`,
-        )
-        .join("")
-    : `<tr><td colspan="4" style="text-align:center;color:#F05F40">Nenhum holder on-chain encontrado</td></tr>`;
+    )
+    .join("")
+    + `<tr data-whale-empty${topHolders.length > 0 ? ' style="display:none"' : ""}><td colspan="4" style="text-align:center;color:#F05F40">Nenhum holder on-chain acima do limiar selecionado</td></tr>`;
 
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -1039,10 +1050,10 @@ ${metrics.certificates ? `
 ` : ""}
 
 <div class="card full" style="margin-top:16px">
-  <h3>🏆 Top 20 Holders On-Chain</h3>
+  <h3>🏆 Holders On-Chain acima de ${buildWhaleThresholdSelect("holders-threshold", { tableId: "holders-tbody", countId: "holders-count" })} do supply — <span id="holders-count">${topHolders.length}</span> carteira(s)</h3>
   <table id="holders-table">
     <thead><tr><th>#</th><th>Endereço</th><th>Saldo (CAS)</th><th>% Supply</th></tr></thead>
-    <tbody>${holderRows}</tbody>
+    <tbody id="holders-tbody">${holderRows}</tbody>
   </table>
 </div>
 
@@ -1108,6 +1119,7 @@ new Chart(document.getElementById('progressChart'), {
     },
   },
 });
+${WHALE_FILTER_JS}
 </script>
 
 </body>

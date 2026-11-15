@@ -1,12 +1,17 @@
 import { expect } from "chai";
 import {
+  WHALE_DEFAULT_PCT,
+  WHALE_FILTER_JS,
+  WHALE_THRESHOLDS,
   buildPieData,
+  buildWhaleThresholdSelect,
   displayAccountName,
   formatTerm,
   groupTail,
   lastMovements,
   manipulationSignalTooltip,
   safeJsonForScript,
+  whaleMinThreshold,
   type NodeStatsMap,
   type PieAlert,
   type PieHolderInfo,
@@ -187,6 +192,43 @@ describe("cas_report_charts — pizzas e tooltips compartilhados", () => {
       expect(html).to.contain("Anon 1");
       expect(html).to.contain("Anon 2");
       expect(html).to.not.contain("polygonscan.com/address/");
+    });
+  });
+
+  describe("whale threshold combobox", () => {
+    it("WHALE_THRESHOLDS cobre 5–30% e default é o menor", () => {
+      expect(WHALE_THRESHOLDS).to.deep.equal([5, 10, 15, 20, 30]);
+      expect(WHALE_DEFAULT_PCT).to.equal(5);
+      expect(whaleMinThreshold()).to.equal(5);
+    });
+
+    it("buildWhaleThresholdSelect renderiza opções com default selecionado", () => {
+      const html = buildWhaleThresholdSelect("whale-threshold", { tableId: "whale-tbody", countId: "whale-count" });
+      expect(html).to.contain('id="whale-threshold"');
+      expect(html).to.contain('data-table="#whale-tbody"');
+      expect(html).to.contain('data-count-id="whale-count"');
+      expect(html).to.contain('<option value="5" selected>5%</option>');
+      expect(html).to.contain('<option value="30">30%</option>');
+      expect(html.match(/<option/g)).to.have.length(5);
+    });
+
+    it("buildWhaleThresholdSelect honra defaultPct customizado", () => {
+      const html = buildWhaleThresholdSelect("s", { tableId: "t", defaultPct: 20 });
+      expect(html).to.contain('<option value="20" selected>20%</option>');
+      expect(html).to.not.contain('value="5" selected');
+    });
+
+    it("buildWhaleThresholdSelect escapa ids no HTML", () => {
+      const html = buildWhaleThresholdSelect('"><x>', { tableId: '"><y>' });
+      expect(html).to.not.contain('"><x>');
+      expect(html).to.not.contain('"><y>');
+    });
+
+    it("WHALE_FILTER_JS aplica regra estritamente maior e placeholder", () => {
+      expect(WHALE_FILTER_JS).to.contain("pct > min");
+      expect(WHALE_FILTER_JS).to.contain("data-whale-empty");
+      expect(WHALE_FILTER_JS).to.contain("data-count-id");
+      expect(WHALE_FILTER_JS).to.contain("data-whale-pct");
     });
   });
 });

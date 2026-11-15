@@ -109,11 +109,14 @@ import {
 import {
   MANIP_TOOLTIP_BIND_JS,
   PIE_CHARTS_JS,
+  WHALE_FILTER_JS,
   alertColor,
   buildPieData,
+  buildWhaleThresholdSelect,
   manipulationSignalTooltip,
   safeJsonForScript,
   severityToPct,
+  whaleMinThreshold,
   type PieAlert,
 } from "../utils/cas_report_charts";
 import {
@@ -1061,10 +1064,12 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marke
 
   const typeCell = (type: string) => `${typeEmoji(type)} ${type}`;
 
-  const whaleRows = metrics.whales30.length
-    ? metrics.whales30
-        .map(
-          (w) => `<tr class="alert-row">
+  // Todas as linhas >= menor limiar do combobox são renderizadas com
+  // data-whale-pct; WHALE_FILTER_JS oculta as abaixo do corte escolhido.
+  const whaleCandidates = metrics.holders.filter((h) => h.pct >= whaleMinThreshold());
+  const whaleRows = whaleCandidates
+    .map(
+      (w) => `<tr class="alert-row" data-whale-pct="${w.pct}">
         <td>${polyScanLink(w.address, shortAddr(w.address))}</td>
         <td title="${escapeHtml(w.observation || "")}">${escapeHtml(w.label || shortAddr(w.address))}</td>
         <td>${fmt(toNum(w.balance))} CAS</td>
@@ -1073,9 +1078,9 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marke
         <td>${escapeHtml(w.asset || "—")}</td>
         <td>${w.isContractLike ? "🏛️ Infraestrutura" : "⚠️ Carteira externa"}</td>
       </tr>`,
-        )
-        .join("")
-    : `<tr><td colspan="7" style="text-align:center;color:#F05F40">✅ Nenhum holder externo acima de 30% do supply</td></tr>`;
+    )
+    .join("")
+    + `<tr data-whale-empty${whaleCandidates.length > 0 ? ' style="display:none"' : ""}><td colspan="7" style="text-align:center;color:#F05F40">✅ Nenhum holder acima do limiar selecionado</td></tr>`;
 
   const latestMovements = [...transfers]
     .sort((a, b) => Number(b.timeStamp) - Number(a.timeStamp))
@@ -1559,11 +1564,11 @@ ${GRAPH_3D_CDN}
 </div>
 
 <div id="tab-concentration" class="tab-panel">
-  <h2>🚨 <span class="term-tip" data-tip="Whale — holder que possui mais de 30% do supply total. Carteiras externas (não-infra) nesse nível representam risco alto de manipulação de preço.">Whales</span> acima de 30% do supply</h2>
+  <h2>🚨 <span class="term-tip" data-tip="Whale — holder que possui uma fatia relevante do supply total. Carteiras externas (não-infra) em níveis altos representam risco de manipulação de preço.">Whales</span> acima de ${buildWhaleThresholdSelect("whale-threshold", { tableId: "whale-tbody", countId: "whale-count" })} do supply — <span id="whale-count">${whaleCandidates.length}</span> carteira(s)</h2>
   <div class="card full">
     <table>
       <thead><tr><th>Endereço</th><th>Rótulo</th><th>Saldo</th><th>% Supply</th><th>Tipo</th><th>Moeda</th><th>Classificação</th></tr></thead>
-      <tbody>${whaleRows}</tbody>
+      <tbody id="whale-tbody">${whaleRows}</tbody>
     </table>
   </div>
   <div class="card full" style="margin-top:16px">
@@ -1960,6 +1965,7 @@ function doPrint() {
 ${GRAPH_3D_TOOLTIP_JS}
 ${PIE_CHARTS_JS}
 ${MANIP_TOOLTIP_BIND_JS}
+${WHALE_FILTER_JS}
 ${GRAPH_3D_INIT_JS}
 ${GRAPH_3D_SEARCH_JS}
 
