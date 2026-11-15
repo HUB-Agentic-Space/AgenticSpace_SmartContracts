@@ -2,10 +2,13 @@ import { expect } from "chai";
 import {
   isCreditOrQuotaError,
   isLocalChatModel,
+  isTruncatedResponse,
   orderOllamaCandidates,
   parseParamSizeB,
   resolveOllamaBaseUrl,
   selectBestOllamaModel,
+  stripCodeFences,
+  tryJsonToHtml,
   OPENROUTER_FALLBACK_MODELS,
   type OllamaModelTag,
 } from "../../scripts/utils/genai_client";
@@ -50,6 +53,16 @@ describe("genai_client — cadeia OpenRouter → Ollama", () => {
       expect(parseParamSizeB(undefined)).to.equal(0);
       expect(parseParamSizeB("")).to.equal(0);
       expect(parseParamSizeB("abc")).to.equal(0);
+    });
+  });
+
+  describe("isTruncatedResponse", () => {
+    it("detecta finish_reason/done_reason 'length' dos dois providers", () => {
+      expect(isTruncatedResponse("length")).to.be.true;      // OpenRouter + Ollama
+      expect(isTruncatedResponse("stop")).to.be.false;
+      expect(isTruncatedResponse(undefined)).to.be.false;
+      expect(isTruncatedResponse(null)).to.be.false;
+      expect(isTruncatedResponse("")).to.be.false;
     });
   });
 
@@ -131,6 +144,30 @@ describe("genai_client — cadeia OpenRouter → Ollama", () => {
       expect(resolveOllamaBaseUrl()).to.equal("http://ollama.local:11434");
       process.env.OLLAMA_BASE_URL = "http://custom:11434/";
       expect(resolveOllamaBaseUrl()).to.equal("http://custom:11434");
+    });
+  });
+
+  describe("stripCodeFences", () => {
+    it("remove fences ```html, ```json e ``` genéricas", () => {
+      expect(stripCodeFences("```html\n<h3>Ok</h3>\n```")).to.equal("<h3>Ok</h3>");
+      expect(stripCodeFences('```json\n{"a":1}\n```')).to.equal('{"a":1}');
+      expect(stripCodeFences("```\nplain\n```")).to.equal("plain");
+      expect(stripCodeFences("<h3>sem fence</h3>")).to.equal("<h3>sem fence</h3>");
+    });
+  });
+
+  describe("tryJsonToHtml", () => {
+    it("converte objeto JSON em blocos h3/p escapando HTML", () => {
+      const html = tryJsonToHtml('{"Seção A": "texto com <tag>", "Lista": ["x","y"]}');
+      expect(html).to.contain("<h3>Seção A</h3><p>texto com &lt;tag&gt;</p>");
+      expect(html).to.contain("<h3>Lista</h3><ul><li>x</li><li>y</li></ul>");
+    });
+
+    it("retorna null para conteúdo que não é objeto JSON", () => {
+      expect(tryJsonToHtml("<h3>HTML normal</h3>")).to.be.null;
+      expect(tryJsonToHtml("texto solto")).to.be.null;
+      expect(tryJsonToHtml('{"malformado": ')).to.be.null;
+      expect(tryJsonToHtml('["array","top-level"]')).to.be.null;
     });
   });
 

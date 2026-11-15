@@ -114,7 +114,7 @@ import {
   severityToPct,
   type PieAlert,
 } from "../utils/cas_report_charts";
-import { generateCompletion } from "../utils/genai_client";
+import { generateCompletion, tryJsonToHtml } from "../utils/genai_client";
 
 // ── Env loading ───────────────────────────────────────────────────────
 
@@ -1164,9 +1164,13 @@ Seja específico com os números fornecidos.`;
 
   // Cadeia compartilhada: AI_MODEL → modelos :free do catálogo → Ollama
   // local (melhor modelo primeiro) ao primeiro erro de crédito/cota.
+  // minContentChars rejeita respostas muito curtas para um relatório de
+  // 4 seções (modelos de raciocínio podem gastar o orçamento no thinking
+  // e devolver só uma fração da análise).
   const result = await generateCompletion({
     prompt,
-    maxTokens: 1000,
+    maxTokens: 4096,
+    minContentChars: 800,
     temperature: 0.3,
     title: "CAS Distribution Dashboard",
     log,
@@ -1174,7 +1178,10 @@ Seja específico com os números fornecidos.`;
 
   if (result) {
     const providerLabel = result.provider === "ollama" ? "Ollama (local)" : "OpenRouter";
-    return `<p style="font-size:.75rem;color:var(--muted);margin-bottom:12px;">Gerado por <strong>${providerLabel}</strong> · modelo <code>${result.model}</code></p>${result.content}`;
+    // Modelos fine-tuned de saída estruturada respondem JSON em vez de
+    // HTML — converte para blocos h3/p antes de embutir no relatório.
+    const body = tryJsonToHtml(result.content) ?? result.content;
+    return `<p style="font-size:.75rem;color:var(--muted);margin-bottom:12px;">Gerado por <strong>${providerLabel}</strong> · modelo <code>${result.model}</code></p>${body}`;
   }
 
   log("ERROR", "generateAiAnalysis", "Todos os provedores GenAI falharam");
@@ -1917,7 +1924,7 @@ ${GRAPH_3D_CDN}
 </div>
 
 <div id="tab-ai" class="tab-panel">
-  <h2>🤖 Análise GenAI (OpenRouter)</h2>
+  <h2>🤖 Análise GenAI</h2>
   <div class="card full">${aiHtml}</div>
 </div>
 
