@@ -53,7 +53,7 @@ export const OPENROUTER_FALLBACK_MODELS: readonly string[] = [
 ];
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-const OPENROUTER_TIMEOUT_MS = 20_000;
+const OPENROUTER_TIMEOUT_MS = 60_000;
 const OLLAMA_TAGS_TIMEOUT_MS = 10_000;
 const OLLAMA_CHAT_TIMEOUT_MS = 180_000;
 const OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434";
@@ -69,6 +69,14 @@ export interface GenAiRequest {
   prompt: string;
   /** Max tokens to generate (OpenRouter `max_tokens` / Ollama `num_predict`). Default 4096. */
   maxTokens?: number;
+  /**
+   * Minimum acceptable response size in characters. Smaller answers are
+   * treated as provider failures so the chain moves to the next model —
+   * protects callers against answers that look truncated (e.g. reasoning
+   * models burning the token budget on thinking, or terse replies to
+   * multi-section prompts). Default 0 (no minimum).
+   */
+  minContentChars?: number;
   /** Sampling temperature. Default 0.3. */
   temperature?: number;
   /** `X-Title` header identifying the calling report to OpenRouter. */
@@ -161,6 +169,17 @@ const EMBEDDING_FAMILY_RE = /bert|embed/i;
  * "embed", and remote `*:cloud` models (remote_host set) which need an
  * ollama.com account instead of running locally.
  */
+/**
+ * True when the provider reports the generation stopped because it hit
+ * the output token limit — OpenRouter `finish_reason` and Ollama
+ * `done_reason` both use "length". Truncated answers are treated as
+ * provider failures so the chain moves to the next model instead of
+ * embedding broken/incomplete HTML in the report.
+ */
+export function isTruncatedResponse(reason: string | undefined | null): boolean {
+  return reason === "length";
+}
+
 export function isLocalChatModel(tag: OllamaModelTag): boolean {
   if (tag.remote_host) return false;
   if (/embed/i.test(tag.name)) return false;
@@ -280,15 +299,74 @@ async function callOpenRouter(
       temperature: req.temperature ?? 0.3,
       max_tokens: req.maxTokens ?? 4096,
     }),
-  })) as { choices?: { message?: { content?: string } }[]; error?: { message?: string } };
+  })) as { choices?: { message?: { content?: string }; finish_reason?: string }[]; error?: { message?: string } };
 
   if (data.error?.message) {
     throw new Error(`OpenRouter error: ${data.error.message.slice(0, 200)}`);
   }
-  const content = data.choices?.[0]?.message?.content?.trim();
+  const choice = data.choices?.[0];
+  const content = choice?.message?.content?.trim();
   if (!content) throw new Error("Resposta vazia do modelo");
+  assertUsableContent(content, choice?.finish_reason, req, "OpenRouter");
   log("OK", "callOpenRouter", "Resposta recebida", { model, chars: content.length });
-  return content.replace(/```html?|```/g, "");
+  return stripCodeFences(content);
+}
+
+/**
+ * Removes markdown code fences (```html, ```json, ``` … ```) that
+ * models wrap around generated content. Applied to every provider
+ * response before it reaches the caller.
+ */
+export function stripCodeFences(content: string): string {
+  return content.replace(/```[a-zA-Z]*\s*\n?/g, "").replace(/```/g, "").trim();
+}
+
+/**
+ * When a model answers with a JSON object instead of the requested HTML
+ * (structured-output fine-tunes do this), converts its entries into
+ * `<h3>key</h3><p>value</p>` blocks — `<ul>` for array values. All text
+ * is HTML-escaped. Returns null for non-JSON input so callers keep their
+ * normal rendering path.
+ */
+export function tryJsonToHtml(content: string): string | null {
+  const trimmed = content.trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return null;
+  let obj: unknown;
+  try {
+    obj = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  if (typeof obj !== "object" || obj === null || Array.isArray(obj)) return null;
+  const esc = (s: string) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  const blocks = Object.entries(obj as Record<string, unknown>).map(([k, v]) => {
+    if (typeof v === "string") return `<h3>${esc(k)}</h3><p>${esc(v)}</p>`;
+    if (Array.isArray(v)) return `<h3>${esc(k)}</h3><ul>${v.map((i) => `<li>${esc(String(i))}</li>`).join("")}</ul>`;
+    return `<h3>${esc(k)}</h3><p>${esc(JSON.stringify(v))}</p>`;
+  });
+  return blocks.length > 0 ? blocks.join("\n") : null;
+}
+
+/**
+ * Rejects generated text that is unusable for the caller: either
+ * truncated by the provider's token limit (finish/done reason
+ * "length") or shorter than `req.minContentChars` when a minimum was
+ * configured. Throws so the fallback chain moves to the next model.
+ */
+function assertUsableContent(
+  content: string,
+  stopReason: string | undefined,
+  req: GenAiRequest,
+  provider: string,
+): void {
+  if (isTruncatedResponse(stopReason)) {
+    throw new Error(`Resposta truncada pelo limite de tokens no ${provider} (${content.length} chars)`);
+  }
+  const minChars = req.minContentChars ?? 0;
+  if (minChars > 0 && content.length < minChars) {
+    throw new Error(`Resposta insuficiente no ${provider} (${content.length} < ${minChars} chars)`);
+  }
 }
 
 /**
@@ -326,12 +404,13 @@ async function callOllama(baseUrl: string, model: string, req: GenAiRequest, log
       stream: false,
       options: { temperature: req.temperature ?? 0.3, num_predict: req.maxTokens ?? 4096 },
     }),
-  })) as { message?: { content?: string } };
+  })) as { message?: { content?: string }; done_reason?: string };
 
   const content = data.message?.content?.trim();
   if (!content) throw new Error("Resposta vazia do Ollama");
+  assertUsableContent(content, data.done_reason, req, "Ollama");
   log("OK", "callOllama", "Resposta recebida", { model, chars: content.length });
-  return content.replace(/```html?|```/g, "");
+  return stripCodeFences(content);
 }
 
 // ── Fallback chain ────────────────────────────────────────────────────

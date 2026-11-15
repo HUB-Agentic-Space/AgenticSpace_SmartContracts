@@ -27,7 +27,7 @@ import { formatUnits } from "agentic_space_commons";
 import * as fs from "fs";
 import * as path from "path";
 import dotenv from "dotenv";
-import { generateCompletion } from "../utils/genai_client";
+import { generateCompletion, tryJsonToHtml } from "../utils/genai_client";
 
 // ── Env loading ───────────────────────────────────────────────────────
 
@@ -836,6 +836,7 @@ async function generateAiSuggestion(
   const result = await generateCompletion({
     prompt,
     maxTokens: 4096,
+    minContentChars: 100,
     temperature: 0.3,
     title: "AirDrop CAS Campaign Report",
     log,
@@ -857,7 +858,10 @@ async function generateAiSuggestion(
   }
 
   const providerLabel = result.provider === "ollama" ? "Ollama (local)" : "OpenRouter";
-  return `<p style="font-size:.75rem;color:var(--muted);margin-bottom:12px;">Gerado por <strong>${providerLabel}</strong> · modelo <code>${escapeHtml(result.model)}</code></p>${markdownToHtml(content)}`;
+  // Modelos fine-tuned de saída estruturada respondem JSON — converte
+  // para blocos h3/p; demais respostas seguem o markdownToHtml usual.
+  const body = tryJsonToHtml(content) ?? markdownToHtml(content);
+  return `<p style="font-size:.75rem;color:var(--muted);margin-bottom:12px;">Gerado por <strong>${providerLabel}</strong> · modelo <code>${escapeHtml(result.model)}</code></p>${body}`;
 }
 
 // ── HTML helpers ───────────────────────────────────────────────────────
