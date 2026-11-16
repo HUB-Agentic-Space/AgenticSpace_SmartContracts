@@ -6,11 +6,16 @@
  *   - scanRequest: requisição com retry progressivo, fallback de base,
  *     rate-limit, Retry-After e circuit breaker de bases mortas
  *   - fetchTotalSupply: tokensupply com fallback eth_call via scan e RPC direto
- *   - syncTransfers: sync incremental de tokentx, upsert de endereços
+ *   - syncTransfers: sync incremental de tokentx, upsert de endereços e
+ *     fallback eth_getLogs via RPC quando o índice do scan está parado
  *   - syncPoolCreators: descoberta de pool creators via logs de PairCreated
  *
  * Padrões: Adapter (API → SQLite), Strategy (múltiplas bases com fallback),
  * Circuit Breaker (bases marcadas como mortas são puladas no processo)
+ *
+ * Author: Carlos Delfino
+ * Email: consultoria@carlosdelfino.eti.br
+ * WhatsApp: +55 (85) 98520-5490
  */
 
 import * as path from "path";
@@ -385,7 +390,7 @@ export async function fetchTotalSupply(tokenAddress: string): Promise<bigint> {
     });
   }
 
-  const rpcUrl = process.env.POLYGON_RPC_URL?.trim() || "https://polygon.drpc.org";
+  const rpcUrl = rpcEndpoints()[0];
   const result = (await rpcCall(rpcUrl, "eth_call", [
     { to: tokenAddress, data: TOTAL_SUPPLY_SELECTOR },
     "latest",
@@ -394,11 +399,356 @@ export async function fetchTotalSupply(tokenAddress: string): Promise<bigint> {
   return BigInt(result);
 }
 
-// ── Transfer sync ─────────────────────────────────────────────────────
+// ── RPC endpoints com fallback ────────────────────────────────────────
+
+// RPCs públicos da Polygon usados quando POLYGON_RPC_URL falha, está
+// rate-limited ou rejeita o range do eth_getLogs. A ordem é estável:
+// primeiro a URL configurada, depois os fallbacks públicos.
+const RPC_FALLBACK_URLS = [
+  "https://polygon-bor-rpc.publicnode.com",
+  "https://gateway.tenderly.co/public/polygon",
+  "https://polygon.api.onfinality.io/public",
+  "https://polygon.drpc.org",
+  "https://1rpc.io/matic",
+  "https://polygon.llamarpc.com",
+];
+
+function rpcEndpoints(): string[] {
+  const urls: string[] = [];
+  const env = process.env.POLYGON_RPC_URL?.trim();
+  if (env) urls.push(env);
+  for (const u of RPC_FALLBACK_URLS) if (!urls.includes(u)) urls.push(u);
+  return urls;
+}
 
 /**
- * Sincroniza incrementalmente as transferências do token CAS via API,
- * inserindo novas transações e endereços no banco SQLite.
+ * Executa uma chamada JSON-RPC tentando cada endpoint configurado até um
+ * responder — Strategy sobre rpcCall com rotação de endpoints.
+ */
+async function rpcCallAny(method: string, params: unknown[]): Promise<unknown> {
+  let lastError: Error | null = null;
+  for (const url of rpcEndpoints()) {
+    if (deadRpcEndpoints.has(url)) continue;
+    try {
+      return await rpcCall(url, method, params);
+    } catch (err) {
+      lastError = err as Error;
+      if (isDeterministicRpcError(err)) deadRpcEndpoints.add(url);
+      log("WARN", "rpcCallAny", "RPC falhou, tentando próximo endpoint", {
+        rpc: new URL(url).hostname,
+        method,
+        error: lastError.message,
+      });
+    }
+  }
+  throw lastError ?? new Error("rpcCallAny: todos os endpoints falharam");
+}
+
+interface JsonRpcRequest {
+  method: string;
+  params: unknown[];
+}
+
+/**
+ * Executa um lote JSON-RPC (array de requests) contra o primeiro endpoint
+ * que responder corretamente. Cada resposta é casada pelo id; item com
+ * erro individual reprova o lote inteiro e roda o próximo endpoint.
+ */
+async function rpcBatchAny(requests: JsonRpcRequest[]): Promise<unknown[]> {
+  const payload = requests.map((r, i) => ({ jsonrpc: "2.0", id: i + 1, method: r.method, params: r.params }));
+  let lastError: Error | null = null;
+  for (const url of rpcEndpoints()) {
+    if (deadRpcEndpoints.has(url)) continue;
+    try {
+      const res = await fetchWithTimeout(url, REQUEST_TIMEOUT_MS, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const arr = (await res.json()) as { id: number; result?: unknown; error?: { message?: string } }[];
+      if (!Array.isArray(arr)) throw new Error("Resposta batch inválida");
+      const byId = new Map(arr.map((item) => [item.id, item]));
+      return payload.map((req) => {
+        const item = byId.get(req.id);
+        if (!item) throw new Error("Resposta ausente no batch");
+        if (item.error) throw new Error(`RPC batch item: ${item.error.message ?? "erro desconhecido"}`);
+        return item.result;
+      });
+    } catch (err) {
+      lastError = err as Error;
+      if (isDeterministicRpcError(err)) deadRpcEndpoints.add(url);
+      log("WARN", "rpcBatchAny", "Batch RPC falhou, tentando próximo endpoint", {
+        rpc: new URL(url).hostname,
+        error: lastError.message,
+      });
+    }
+  }
+  throw lastError ?? new Error("rpcBatchAny: todos os endpoints falharam");
+}
+
+// ── Transfer sync ─────────────────────────────────────────────────────
+
+// Tópico keccak256 do evento ERC-20 Transfer(address,address,uint256).
+const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+
+// Span máximo coberto pelo fallback eth_getLogs quando o banco está
+// vazio ou muito atrasado — o fallback é um preenchedor de lacuna, não
+// um indexador completo (o histórico inteiro vem do índice do scan).
+const RPC_LOGS_MAX_SPAN = 1_000_000;
+const GETLOGS_CHUNK_INITIAL = 5_000;
+const GETLOGS_CHUNK_MIN = 100;
+const BLOCK_TS_BATCH_SIZE = 50;
+const CHUNK_TRANSIENT_RETRIES = 4;
+const CHUNK_TRANSIENT_DELAY_MS = 5_000;
+
+interface RpcTransferLog {
+  transactionHash: string;
+  blockNumber: string;
+  logIndex?: string;
+  topics: string[];
+  data: string;
+}
+
+// Estado de capacidade por endpoint válido durante o processo: endpoints
+// que rejeitam deterministicamente (HTTP 4xx, método não suportado) são
+// marcados como mortos; endpoints com limite de span de blocos registram
+// o limite e são pulados quando o chunk pedido o excede; endpoints que
+// falham N vezes seguidas (429 persistente, conexão recusada) são pulados
+// pelo resto da varredura.
+const deadRpcEndpoints = new Set<string>();
+const rpcSpanLimits = new Map<string, number>();
+const rpcFailStreaks = new Map<string, number>();
+const RPC_FAIL_STREAK_MAX = 3;
+
+// RPCs gratuitos limitam o span de blocos do eth_getLogs com mensagens
+// que variam entre provedores ("range over N blocks", "limited to N blocks").
+function isLogRangeError(err: unknown): boolean {
+  const msg = (err as Error)?.message?.toLowerCase() ?? "";
+  return msg.includes("range") || msg.includes("too many") || msg.includes("exceed") || msg.includes("limited");
+}
+
+// Falhas determinísticas que não valem retry nem rotação posterior:
+// HTTP 4xx (exceto 429) e "method not found".
+function isDeterministicRpcError(err: unknown): boolean {
+  const msg = (err as Error)?.message?.toLowerCase() ?? "";
+  if (/http 4\d\d/.test(msg) && !msg.includes("429")) return true;
+  return msg.includes("method not found") || msg.includes("-32601");
+}
+
+// Extrai o limite de blocos da mensagem do provedor quando presente
+// ("ranges over 10000 blocks", "limited to 0 - 50 blocks range").
+function parseSpanLimit(msg: string): number | null {
+  const m = msg.match(/(\d[\d,_]*)\s*blocks?/i);
+  if (!m) return null;
+  const n = parseInt(m[1].replace(/[,_]/g, ""), 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * eth_getLogs com rotação de endpoints RPC — cada provedor gratuito tem
+ * limites de range e rate-limit diferentes. O erro propagado carrega a
+ * flag `rangeLimited` quando TODOS os endpoints tentáveis rejeitaram o
+ * range, permitindo ao chamador reduzir o chunk em vez de abortar.
+ */
+async function ethGetLogsAny(address: string, fromBlock: number, toBlock: number): Promise<RpcTransferLog[]> {
+  const span = toBlock - fromBlock + 1;
+  let lastError: Error | null = null;
+  let attempted = 0;
+  let rangeFailures = 0;
+
+  for (const url of rpcEndpoints()) {
+    if (deadRpcEndpoints.has(url)) continue;
+    if ((rpcFailStreaks.get(url) ?? 0) >= RPC_FAIL_STREAK_MAX) continue;
+    const knownLimit = rpcSpanLimits.get(url);
+    if (knownLimit !== undefined && span > knownLimit) continue;
+
+    attempted++;
+    try {
+      const result = (await rpcCall(url, "eth_getLogs", [{
+        address,
+        topics: [TRANSFER_TOPIC],
+        fromBlock: `0x${fromBlock.toString(16)}`,
+        toBlock: `0x${toBlock.toString(16)}`,
+      }])) as RpcTransferLog[] | null;
+      rpcFailStreaks.delete(url);
+      return result ?? [];
+    } catch (err) {
+      lastError = err as Error;
+      const msg = lastError.message.toLowerCase();
+      rpcFailStreaks.set(url, (rpcFailStreaks.get(url) ?? 0) + 1);
+      if (isLogRangeError(err)) {
+        rangeFailures++;
+        rpcSpanLimits.set(url, parseSpanLimit(msg) ?? span - 1);
+      } else if (isDeterministicRpcError(err)) {
+        deadRpcEndpoints.add(url);
+      }
+      log("WARN", "ethGetLogsAny", "eth_getLogs falhou, tentando próximo RPC", {
+        rpc: new URL(url).hostname,
+        fromBlock,
+        toBlock,
+        error: lastError.message,
+      });
+    }
+  }
+
+  const err = lastError ?? new Error("eth_getLogs falhou em todos os RPCs");
+  // attempted === 0: todos pulados por limite de span conhecido — o chunk
+  // pedido excede o teto de todos os endpoints vivos, trate como range.
+  if (attempted === 0 || rangeFailures === attempted) {
+    (err as Error & { rangeLimited?: boolean }).rangeLimited = true;
+  }
+  throw err;
+}
+
+/**
+ * Busca timestamps de blocos em lote JSON-RPC; se o batch falhar em todos
+ * os endpoints, cai para chamadas sequenciais por bloco.
+ */
+async function fetchBlockTimestamps(blocks: number[]): Promise<Map<number, number>> {
+  const out = new Map<number, number>();
+  for (let i = 0; i < blocks.length; i += BLOCK_TS_BATCH_SIZE) {
+    const slice = blocks.slice(i, i + BLOCK_TS_BATCH_SIZE);
+    try {
+      const results = await rpcBatchAny(
+        slice.map((b) => ({ method: "eth_getBlockByNumber", params: [`0x${b.toString(16)}`, false] })),
+      );
+      slice.forEach((b, j) => {
+        const ts = parseInt((results[j] as { timestamp?: string } | null)?.timestamp ?? "0x0", 16);
+        out.set(b, ts);
+      });
+    } catch {
+      for (const b of slice) {
+        const blk = (await rpcCallAny("eth_getBlockByNumber", [`0x${b.toString(16)}`, false])) as { timestamp?: string } | null;
+        out.set(b, parseInt(blk?.timestamp ?? "0x0", 16));
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Decodifica e insere um lote de logs Transfer no banco, buscando o
+ * timestamp de cada bloco (com cache entre chunks para não repetir
+ * eth_getBlockByNumber).
+ *
+ * @returns quantidade de transações efetivamente inseridas.
+ */
+async function insertRpcTransferLogs(logs: RpcTransferLog[], tsCache: Map<number, number>): Promise<number> {
+  const missingBlocks = [
+    ...new Set(logs.map((l) => parseInt(l.blockNumber, 16)).filter((b) => !tsCache.has(b))),
+  ];
+  if (missingBlocks.length > 0) {
+    const fetched = await fetchBlockTimestamps(missingBlocks);
+    for (const [b, ts] of fetched) tsCache.set(b, ts);
+  }
+
+  const fallbackTs = Math.floor(Date.now() / 1000);
+  const beforeCount = getTransactionCount();
+  for (const l of logs) {
+    const bn = parseInt(l.blockNumber, 16);
+    const from = `0x${(l.topics[1] ?? "").slice(26)}`.toLowerCase();
+    const to = `0x${(l.topics[2] ?? "").slice(26)}`.toLowerCase();
+    if (!/^0x[0-9a-f]{40}$/.test(from) || !/^0x[0-9a-f]{40}$/.test(to)) continue;
+
+    const isMint = from === ZERO ? 1 : 0;
+    const isBurn = to === ZERO ? 1 : 0;
+    insertTransaction({
+      tx_hash: l.transactionHash,
+      block_number: bn,
+      timestamp: tsCache.get(bn) || fallbackTs,
+      from_address: from,
+      to_address: to,
+      value: BigInt(l.data || "0x0").toString(10),
+      is_mint: isMint,
+      is_burn: isBurn,
+      label: "",
+      description: "",
+    });
+
+    if (!isMint) upsertAddress(from, "", "eoa", false);
+    if (!isBurn) upsertAddress(to, "", "eoa", false);
+  }
+  return getTransactionCount() - beforeCount;
+}
+
+/**
+ * Fallback de sync via eth_getLogs direto no RPC — usado quando o índice
+ * do scan está desatualizado e não enxerga transfers recentes. O range é
+ * dividido em chunks adaptativos (RPCs gratuitos limitam o span de
+ * blocos) e cada chunk é persistido imediatamente: se a varredura abortar
+ * no meio, o progresso parcial permanece no banco e a próxima execução
+ * continua de onde parou.
+ *
+ * @param tokenAddress contrato ERC-20 cujos eventos Transfer serão lidos.
+ * @param fromBlock primeiro bloco a consultar (inclusivo — re-ler o último
+ *   bloco conhecido é seguro porque o INSERT OR IGNORE deduplica).
+ * @param tip último bloco (ponta da chain).
+ * @returns quantidade de transferências efetivamente inseridas no banco.
+ */
+async function syncTransfersViaRpcLogs(tokenAddress: string, fromBlock: number, tip: number): Promise<number> {
+  const tsCache = new Map<number, number>();
+  let chunk = GETLOGS_CHUNK_INITIAL;
+  let cursor = fromBlock;
+  let inserted = 0;
+  let totalLogs = 0;
+  let transientFails = 0;
+
+  while (cursor <= tip) {
+    const end = Math.min(cursor + chunk - 1, tip);
+    try {
+      await sleep(RATE_LIMIT_DELAY_MS);
+      const page = await ethGetLogsAny(tokenAddress, cursor, end);
+      transientFails = 0;
+      if (page.length > 0) {
+        totalLogs += page.length;
+        inserted += await insertRpcTransferLogs(page, tsCache);
+      }
+      cursor = end + 1;
+    } catch (err) {
+      const e = err as Error & { rangeLimited?: boolean };
+      if (e.rangeLimited && chunk > GETLOGS_CHUNK_MIN) {
+        chunk = Math.max(GETLOGS_CHUNK_MIN, chunk >> 1);
+        log("WARN", "syncTransfersViaRpcLogs", "Range rejeitado pelo RPC, reduzindo chunk", { chunk });
+        continue;
+      }
+      if (!e.rangeLimited && transientFails < CHUNK_TRANSIENT_RETRIES) {
+        transientFails++;
+        const delay = CHUNK_TRANSIENT_DELAY_MS * transientFails;
+        log("WARN", "syncTransfersViaRpcLogs", "Falha transitória no chunk, aguardando retry", {
+          cursor, end, transientFails, delayMs: delay, error: e.message,
+        });
+        await sleep(delay);
+        continue;
+      }
+      // Aborta mantendo o progresso já persistido — a próxima execução
+      // retoma a partir do último bloco gravado no banco.
+      log("WARN", "syncTransfersViaRpcLogs", "Abortando varredura RPC; progresso parcial mantido", {
+        cursor, tip, inserted, error: e.message,
+      });
+      break;
+    }
+  }
+
+  log(totalLogs > 0 ? "OK" : "INFO", "syncTransfersViaRpcLogs", "Varredura via RPC concluída", {
+    logs: totalLogs,
+    inserted,
+    fromBlock,
+    lastScanned: Math.min(cursor, tip),
+    tip,
+  });
+  return inserted;
+}
+
+/**
+ * Sincroniza incrementalmente as transferências do token CAS, inserindo
+ * novas transações e endereços no banco SQLite.
+ *
+ * O caminho primário é o índice tokentx do scan; em seguida a ponta da
+ * chain é comparada com o último bloco do banco e qualquer lacuna é
+ * coberta via eth_getLogs direto no RPC — necessário porque o índice do
+ * Etherscan V2 para a Polygon pode ficar parado e não enxergar transfers
+ * recentes.
  *
  * Retorna todas as transferências do banco (não apenas as novas).
  */
@@ -414,7 +764,9 @@ export async function syncTransfers(tokenAddress: string): Promise<TokenTransfer
     token: tokenAddress, dbTxCount: dbCount, lastSyncedBlock,
   });
 
-  const startBlock = lastSyncedBlock > 0 ? lastSyncedBlock + 1 : 0;
+  // Re-lê o último bloco conhecido: transfers que caíram no mesmo bloco
+  // da última tx sincronizada não são puladas (INSERT OR IGNORE deduplica).
+  const startBlock = lastSyncedBlock;
   let currentStartBlock = startBlock;
   let newCount = 0;
 
@@ -466,7 +818,35 @@ export async function syncTransfers(tokenAddress: string): Promise<TokenTransfer
     const lastTxBlock = parseInt(result[result.length - 1].blockNumber, 10);
 
     if (result.length < PAGE_SIZE) break;
-    currentStartBlock = lastTxBlock + 1;
+    // Avança a partir do último bloco da página (não +1): uma página cheia
+    // pode terminar no meio de um bloco e os transfers restantes desse
+    // bloco seriam perdidos; a releitura é deduplicada no INSERT OR IGNORE.
+    currentStartBlock = lastTxBlock;
+  }
+
+  // O índice do scan pode estar parado: compara o último bloco do banco
+  // com a ponta da chain e cobre a lacuna via eth_getLogs direto no RPC.
+  try {
+    const tipHex = (await rpcCallAny("eth_blockNumber", [])) as string;
+    const tip = parseInt(tipHex, 16);
+    const lastDbBlock = getLastBlockNumber();
+    if (tip > lastDbBlock) {
+      let fromBlock = lastDbBlock;
+      if (tip - fromBlock > RPC_LOGS_MAX_SPAN) {
+        fromBlock = tip - RPC_LOGS_MAX_SPAN;
+        log("WARN", "syncTransfers", "Lacuna maior que o span máximo do fallback RPC", {
+          lastDbBlock,
+          tip,
+          fromBlock,
+          spanLimit: RPC_LOGS_MAX_SPAN,
+        });
+      }
+      newCount += await syncTransfersViaRpcLogs(tokenAddress, fromBlock, tip);
+    }
+  } catch (err) {
+    log("WARN", "syncTransfers", "Fallback via RPC falhou (mantendo dados do scan)", {
+      error: (err as Error).message,
+    });
   }
 
   if (newCount > 0) {
