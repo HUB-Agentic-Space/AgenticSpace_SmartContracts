@@ -126,6 +126,11 @@ import {
   type DexPoolView,
 } from "../utils/cas_dex_pools";
 import {
+  buildPoolBalanceRows,
+  fetchPoolBalances,
+  type PoolBalance,
+} from "../utils/cas_pool_balances";
+import {
   syncTransfers,
   syncPoolCreators,
   fetchTotalSupply,
@@ -212,6 +217,8 @@ interface MarketData {
   dexPairs: DexPair[];
   bestPair: DexPair | null;
   dexPools: DexPoolView[];
+  /** Saldos on-chain dos pools (aba "Saldos dos Pools"); [] quando a leitura falha. */
+  poolBalances?: PoolBalance[];
 }
 
 // ── Known address labels (env + SQLite DB) ─────────────────────────────
@@ -1285,6 +1292,9 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marke
   };
   const dexPoolRows = buildDexPoolRows(marketData.dexPools, poolCreatorCell);
 
+  // ── Saldos dos pools (lidos on-chain no main; [] = leitura indisponível) ──
+  const poolBalanceRows = buildPoolBalanceRows(marketData.poolBalances ?? []);
+
   // Alertas por endereço para as fatias da pizza (score heurístico, sem GNN)
   const nodeAlertMap = new Map<string, PieAlert[]>();
   for (const s of signals) {
@@ -1559,6 +1569,14 @@ ${GRAPH_3D_CDN}
     <table>
       <thead><tr><th><span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span></th><th>Par</th><th>Pool / PoolId</th><th>Criador</th><th>Criado em</th><th>Tx</th></tr></thead>
       <tbody>${dexPoolRows}</tbody>
+    </table>
+  </div>
+  <h2 style="margin-top:28px">🏊 Saldos dos Pools <span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span></h2>
+  <p class="sub">Saldos atuais lidos on-chain (balanceOf/getReserves, somente leitura) vs. liquidez inicial = contra-par do primeiro Mint após a criação do pool. <strong>Excesso</strong> = saldo do contra-par acima do depósito inicial. Pools <strong>Uniswap V4</strong> não têm contrato de pair: o saldo exibido é o agregado da moeda no PoolManager (todas as pools) e não é comparado com a liquidez inicial. O <strong>CASSwap Diamond</strong> usa POL nativo, não WPOL.</p>
+  <div class="card full">
+    <table id="pool-balances-table" class="sortable">
+      <thead><tr><th onclick="sortTable('pool-balances-table', 0, 'string')"><span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário.">DEX</span></th><th onclick="sortTable('pool-balances-table', 1, 'string')">Par</th><th>Pool / PoolId</th><th onclick="sortTable('pool-balances-table', 3, 'number')">Saldo CAS</th><th onclick="sortTable('pool-balances-table', 4, 'number')">Saldo Contra-par</th><th onclick="sortTable('pool-balances-table', 5, 'number')"><span class="term-tip" data-tip="Valor do contra-par depositado no primeiro Mint após a criação do pool — aproximação da liquidez usada para criar o par.">Liquidez inicial</span></th><th><span class="term-tip" data-tip="Excesso = saldo atual do contra-par acima da liquidez inicial; ok = dentro ou abaixo; n/a = sem baseline (V4 agregado, Diamond).">Status</span></th><th onclick="sortTable('pool-balances-table', 7, 'string')">Tipo</th></tr></thead>
+      <tbody>${poolBalanceRows}</tbody>
     </table>
   </div>
 </div>
@@ -2266,6 +2284,38 @@ async function main(): Promise<void> {
     });
   }
 
+  // ── Saldos atuais dos pools (eth_call read-only; alimenta a aba
+  // "Saldos dos Pools") — não bloqueia o dashboard se o RPC falhar. ──
+  let poolBalances: PoolBalance[] = [];
+  if (dexPools.length > 0) {
+    try {
+      // O CASSwap Diamond é venue de reserva (CAS/POL nativo), não entra
+      // em pool_creations — igual ao pool_monitor.py do AnaliseCAS.
+      const diamondView: DexPoolView = {
+        dexName: "CASSwap Diamond",
+        poolId: "0x80bd976cb588cd2f9ad9ac671fb19174e9f3172b",
+        isV4: false,
+        token0: tokenAddress,
+        token1: "0x0000000000000000000000000000000000000000",
+        pairLabel: "CAS/POL",
+        creator: "",
+        blockNumber: 0,
+        timestamp: 0,
+        txHash: "",
+      };
+      const hasDiamond = dexPools.some(
+        (p) => p.poolId.toLowerCase() === diamondView.poolId);
+      poolBalances = await fetchPoolBalances(
+        hasDiamond ? dexPools : [...dexPools, diamondView], tokenAddress);
+      log("OK", "main", "Saldos dos pools lidos on-chain", {
+        pools: poolBalances.length,
+        excesso: poolBalances.filter((p) => p.excess === "excesso").length,
+      });
+    } catch (err) {
+      log("WARN", "main", "Falha ao ler saldos dos pools (não bloqueia)", { error: (err as Error).message });
+    }
+  }
+
   // ── Process market data (already fetched concurrently in API mode) ──
   let marketData: MarketData;
   if (!useDbOnly && cgStatus && dexData) {
@@ -2298,10 +2348,12 @@ async function main(): Promise<void> {
       dexPools,
     };
   }
+  marketData.poolBalances = poolBalances;
   log("OK", "main", "Dados de mercado consolidados", {
     coingeckoListed: marketData.coingeckoListed,
     dexPairs: marketData.dexPairs.length,
     dexPools: marketData.dexPools.length,
+    poolBalances: poolBalances.length,
     bestDex: marketData.bestPair?.dex,
   });
 
