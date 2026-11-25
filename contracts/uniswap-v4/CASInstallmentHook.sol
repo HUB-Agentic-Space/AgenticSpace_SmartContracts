@@ -15,9 +15,10 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {CASInstallmentRouter} from "./CASInstallmentRouter.sol";
 
-/// @title Revenda de CAS em duas parcelas nos pools participantes do Uniswap v4
-/// @notice Uma compra abre um lote. Para 20.000 CAS, a carteira pode vender 10.000 após 24 horas.
-///         As outras 24 horas começam no bloco em que a primeira venda é efetivada.
+/// @title Revenda de metade do saldo remanescente de cada lote de CAS no Uniswap v4
+/// @notice Um lote de 21.000 CAS libera 10.500 após 24 horas, depois 5.250 e depois 2.625.
+///         Cada venda efetiva inicia outra espera de 24 horas. Se vender metade deixaria menos
+///         de 5 CAS, a parcela passa a ser o saldo inteiro e essa venda encerra o lote.
 /// @dev Um hook é um contrato que o PoolManager chama em momentos específicos. Aqui, beforeInitialize
 ///      confere a origem do novo pool e afterSwap registra uma compra ou valida uma venda. Os tokens
 ///      vão para a carteira. O que este contrato guarda são quantidades, prazos e direitos de venda.
@@ -28,6 +29,8 @@ contract CASInstallmentHook {
     // Solidity expressa a duração em segundos. A comparação com o relógio do bloco só acontece
     // quando alguém envia uma transação. Completar 24 horas, por si só, não executa uma ordem.
     uint64 public constant INTERVAL = 1 days;
+    /// @notice Menor saldo positivo que uma venda pode deixar no lote. O CAS tem 18 casas decimais.
+    uint128 public constant MIN_REMAINDER = 5e18;
     // Os quatro endereços immutable são definidos na implantação. PoolManager administra os pools,
     // cas identifica o ERC-20, router identifica quem pode negociar e initializer quem pode inicializar.
     IPoolManager public immutable manager;
@@ -37,8 +40,9 @@ contract CASInstallmentHook {
     // O valor padrão de uma entrada de mapping é false. O construtor marca os IDs dos pools de origem.
     mapping(PoolId => bool) public sourceAllowed;
 
-    // As quantidades são inteiros em unidades mínimas do token. Se nextAmount for 10.000 CAS,
-    // a ordem deve vender exatamente esses 10.000. lastAmount vira a próxima parcela após a venda.
+    // nextAmount é o valor exato da próxima venda. lastAmount é o saldo que ficará depois dela.
+    // A soma é o saldo atual do lote. Preservamos os nomes usados por quem já consulta lots().
+    // Por exemplo, após a primeira venda de um lote de 21.000, estes campos valem 5.250 e 5.250.
     struct Lot {
         uint128 nextAmount;
         uint128 lastAmount;
@@ -215,16 +219,28 @@ contract CASInstallmentHook {
         return (IHooks.afterSwap.selector, 0);
     }
 
-    /// @dev Compras e registros manuais usam a mesma função privada para calcular parcelas e vencimento.
+    /// @dev Calcula a próxima venda exclusivamente a partir do saldo atual deste lote.
+    ///      A mesma função agenda tanto a primeira venda quanto as seguintes.
+    function _scheduleNext(Lot storage lot, uint128 balance) private returns (uint64 sellAfter) {
+        // A divisão inteira retém no lote a metade arredondada para baixo. Subtraí-la do total
+        // atribui à venda a unidade mínima excedente quando a quantidade é ímpar.
+        uint128 remainder = balance / 2;
+        // Com 10 CAS, restariam exatamente 5, e a venda é de 5. Com 9 CAS, restariam 4,5.
+        // Nesse caso zeramos o remanescente e os 9 CAS compõem a própria parcela.
+        if (remainder < MIN_REMAINDER) remainder = 0;
+        lot.nextAmount = balance - remainder;
+        lot.lastAmount = remainder;
+        // O relógio parte deste bloco, seja ele o da compra, do registro ou da venda anterior.
+        sellAfter = uint64(block.timestamp + INTERVAL);
+        lot.sellAfter = sellAfter;
+    }
+
+    /// @dev Compras e registros manuais abrem lotes independentes, mesmo quando haverá uma única venda.
     function _open(address wallet, uint128 amount, PoolId pool) private returns (uint256 id) {
-        // O pré-incremento reserva o próximo ID desta carteira antes de usá-lo. A divisão inteira
-        // arredonda para baixo. Para cinco unidades mínimas, a segunda parcela vale 2 e a primeira 3.
+        // O pré-incremento reserva o próximo ID desta carteira. Obtido o ID, agendamos a primeira
+        // venda a partir do valor recebido e comprometemos o lote inteiro no saldo da carteira.
         id = ++lastLotId[wallet];
-        uint128 second = amount / 2;
-        uint64 sellAfter = uint64(block.timestamp + INTERVAL);
-        // Guardamos as duas parcelas e somamos o lote inteiro ao total comprometido da carteira.
-        // A interface pode recuperar o ID e a data pelo evento mesmo após o fim da chamada.
-        _lots[wallet][id] = Lot(amount - second, second, sellAfter);
+        uint64 sellAfter = _scheduleNext(_lots[wallet][id], amount);
         outstanding[wallet] += amount;
         emit LotOpened(wallet, id, pool, amount, sellAfter);
     }
@@ -248,15 +264,13 @@ contract CASInstallmentHook {
         // nextSale começa em zero. Se esta era a última parcela, delete zera o registro e o zero
         // no evento comunica seu encerramento. O contador de IDs da carteira continua crescente.
         uint64 nextSale;
-        if (lot.lastAmount == 0) {
+        uint128 remaining = lot.lastAmount;
+        if (remaining == 0) {
             delete _lots[wallet][id];
         } else {
-            // Se a compra foi na segunda às 10h e a primeira venda na terça às 16h, a segunda só
-            // estará disponível na quarta às 16h. Usamos o bloco da venda efetiva para iniciar a espera.
-            nextSale = uint64(block.timestamp + INTERVAL);
-            lot.nextAmount = lot.lastAmount;
-            lot.lastAmount = 0;
-            lot.sellAfter = nextSale;
+            // Vendida a parcela autorizada, o que sobrou vira a base do novo cálculo. Se a venda
+            // ocorreu na terça às 16h, a próxima só poderá acontecer a partir de quarta às 16h.
+            nextSale = _scheduleNext(lot, remaining);
         }
         emit InstallmentSold(wallet, id, pool, amount, nextSale);
     }
