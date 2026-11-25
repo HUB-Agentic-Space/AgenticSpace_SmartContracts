@@ -9,7 +9,7 @@ import { FACTORY, FACTORY_CODE_HASH, Key, mineHook, poolId } from "../../scripts
 const DAY = 86_400;
 const PRICE = 1n << 96n;
 // parseEther multiplica por 10^18. Usamos a função pelas 18 casas do CAS simulado.
-// LOT representa 21.000 tokens e HALF é a primeira parcela de 10.500, ambos em unidades mínimas.
+// LOT representa 21.000 tokens e HALF é o teto inicial de 10.500, ambos em unidades mínimas.
 const LOT = parseEther("21000");
 const HALF = LOT / 2n;
 const FACTORY_CODE = "0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3";
@@ -99,7 +99,7 @@ async function fixture() {
 }
 
 describe("CASInstallmentHook / Uniswap v4", function () {
-  it("vende um lote de 21.000 CAS em 13 datas, entre pools, até zerar o saldo", async function () {
+  it("permite vender o máximo de um lote de 21.000 CAS em 13 datas, entre pools, até zerar", async function () {
     const { buyer, cas, buy, sell, hook, keys, hookRevert } = await loadFixture(fixture);
     await buy();
     const boughtAt = BigInt(await time.latest());
@@ -136,25 +136,53 @@ describe("CASInstallmentHook / Uniswap v4", function () {
     await hookRevert(sell(HALF), "afterSwap", "UnknownLot");
   });
 
-  it("conta cada espera da venda efetiva e rejeita outras quantidades mesmo com a venda atrasada", async function () {
-    const { buyer, buy, sell, hook, hookRevert } = await loadFixture(fixture);
+  it("aceita vendas parciais e recalcula o teto e as 24 horas pelo valor efetivamente vendido", async function () {
+    const { buyer, cas, buy, sell, hook, router, keys, hookRevert } = await loadFixture(fixture);
     await buy();
     await time.increase(4 * DAY);
-    // Mesmo esperando quatro dias, a primeira venda precisa consumir a parcela inteira.
-    // Subtrair uma unidade mínima ou tentar consumir o saldo inteiro deve falhar.
-    await hookRevert(sell(HALF - 1n), "afterSwap", "WrongInstallment", [HALF]);
+    // Quatro dias de espera não acumulam limites. Até uma unidade mínima acima de 10.500 é recusada.
+    await expect(sell(0n)).to.be.revertedWithCustomError(router, "InvalidAmount");
+    await hookRevert(sell(HALF + 1n), "afterSwap", "WrongInstallment", [HALF]);
     await hookRevert(sell(LOT), "afterSwap", "WrongInstallment", [HALF]);
-    await sell(HALF);
+    // A carteira escolhe 3.000. O lote e o ERC-20 ficam com 18.000, e a próxima venda pode ir até 9.000.
+    const chosen = parseEther("3000");
+    const firstSale = await sell(chosen);
     const next = await hook.lots(buyer.address, 1);
-    // time.latest() é o timestamp do bloco da venda. O atraso não acumula parcelas.
+    expect([next.nextAmount, next.lastAmount]).to.deep.equal([parseEther("9000"), parseEther("9000")]);
+    expect(await hook.outstanding(buyer.address)).to.equal(parseEther("18000"));
+    expect(await cas.balanceOf(buyer.address)).to.equal(parseEther("18000"));
+    expect(await hook.registrableBalance(buyer.address)).to.equal(0n);
     expect(next.sellAfter).to.equal(BigInt(await time.latest()) + BigInt(DAY));
-    await hookRevert(sell(HALF / 2n), "afterSwap", "TooEarly", [next.sellAfter]);
+    await expect(firstSale).to.emit(hook, "InstallmentSold")
+      .withArgs(buyer.address, 1, poolId(keys[1]), chosen, next.sellAfter);
+    // Nem o limite que sobrou da primeira rodada nem a troca de pool dispensam a próxima espera.
+    await time.setNextBlockTimestamp(next.sellAfter - 1n);
+    await hookRevert(sell(parseEther("1"), 1, 0), "afterSwap", "TooEarly", [next.sellAfter]);
     await time.increase(3 * DAY);
-    await hookRevert(sell(HALF), "afterSwap", "WrongInstallment", [HALF / 2n]);
-    await sell(HALF / 2n);
+    await hookRevert(sell(parseEther("9000") + 1n), "afterSwap", "WrongInstallment", [parseEther("9000")]);
+    await sell(parseEther("8000"), 1, 0);
     const third = await hook.lots(buyer.address, 1);
-    expect(third.nextAmount).to.equal(HALF / 4n);
+    expect(third.nextAmount).to.equal(parseEther("5000"));
     expect(third.sellAfter).to.equal(BigInt(await time.latest()) + BigInt(DAY));
+    expect(await hook.outstanding(buyer.address)).to.equal(parseEther("10000"));
+    expect(await cas.balanceOf(buyer.address)).to.equal(parseEther("10000"));
+  });
+
+  it("confere em uma venda de saída fixa o CAS debitado, inclusive a taxa do swap", async function () {
+    const { buyer, cas, buy, hook, router, keys, hookRevert } = await loadFixture(fixture);
+    await buy();
+    await time.increaseTo((await hook.lots(buyer.address, 1)).sellAfter);
+    const trader = router.connect(buyer);
+    // Neste pool de teste, comprar 10.500 da outra moeda exigiria mais de 10.500 CAS de entrada.
+    await hookRevert(trader.swap(keys[1], true, HALF, LOT, 1, MaxUint256), "afterSwap", "WrongInstallment", [HALF]);
+    const output = parseEther("1000");
+    const [spent] = await trader.swap.staticCall(keys[1], true, output, HALF, 1, MaxUint256);
+    expect(spent).to.be.greaterThan(output);
+    await trader.swap(keys[1], true, output, HALF, 1, MaxUint256);
+    const remaining = LOT - spent;
+    expect(await cas.balanceOf(buyer.address)).to.equal(remaining);
+    expect(await hook.outstanding(buyer.address)).to.equal(remaining);
+    expect((await hook.lots(buyer.address, 1)).nextAmount).to.equal(remaining / 2n);
   });
 
   it("mantém compras independentes nas duas ordens das moedas e credita o delta entregue no exact input", async function () {
@@ -170,9 +198,10 @@ describe("CASInstallmentHook / Uniswap v4", function () {
     expect(second.nextAmount + second.lastAmount).to.equal(added);
     expect(second.sellAfter).to.be.greaterThan(first.sellAfter);
     await time.setNextBlockTimestamp(first.sellAfter);
-    await sell(HALF);
-    // Consumir uma parcela do primeiro lote deixa a data da segunda compra independente.
+    await sell(parseEther("500"));
+    // A venda parcial abate somente o primeiro lote. O compromisso total ainda inclui o segundo.
     expect((await hook.lots(buyer.address, 2)).sellAfter).to.equal(second.sellAfter);
+    expect(await hook.outstanding(buyer.address)).to.equal(LOT - parseEther("500") + added);
   });
 
   it("registra CAS recebido sem custódia, evita dupla contagem e separa os direitos entre carteiras", async function () {
@@ -183,7 +212,8 @@ describe("CASInstallmentHook / Uniswap v4", function () {
     await expect(hook.connect(buyer).registerBalance(1)).to.be.revertedWithCustomError(hook, "UnregisteredBalance").withArgs(0);
     await cas.connect(buyer).transfer(other.address, LOT);
     expect(await hook.registrableBalance(buyer.address)).to.equal(0n);
-    const sellOther = () => router.connect(other).swap(keys[1], true, -HALF, 1, 1, MaxUint256);
+    const chosen = parseEther("1000");
+    const sellOther = () => router.connect(other).swap(keys[1], true, -chosen, 1, 1, MaxUint256);
     // A transferência moveu os tokens. O destinatário tem sua própria numeração de lotes e deve
     // registrar o que recebeu. O saldo ERC-20 fica com ele durante toda a espera.
     await hookRevert(sellOther(), "afterSwap", "UnknownLot");
@@ -196,15 +226,14 @@ describe("CASInstallmentHook / Uniswap v4", function () {
     expect(await hook.outstanding(buyer.address)).to.equal(0);
     await time.setNextBlockTimestamp(lot.sellAfter);
     await sellOther();
-    expect(await cas.balanceOf(other.address)).to.equal(HALF);
-    expect((await hook.lots(other.address, 1)).nextAmount).to.equal(HALF / 2n);
+    expect(await cas.balanceOf(other.address)).to.equal(LOT - chosen);
+    expect((await hook.lots(other.address, 1)).nextAmount).to.equal((LOT - chosen) / 2n);
   });
 
-  it("exige a venda integral após 24 h se a metade deixaria menos de 5 CAS, inclusive na primeira venda", async function () {
+  it("permite a quitação após 24 h e rejeita vendas que deixariam um resíduo positivo inferior a 5 CAS", async function () {
     const { buyer, cas, hook, buy, sell, hookRevert } = await loadFixture(fixture);
-    // O último caso está a uma unidade mínima de 10 CAS. Sua metade arredondada para baixo
-    // fica logo abaixo de 5, portanto o lote também deve ser encerrado em uma única venda.
-    const sizes = [parseEther("4.5"), parseEther("5"), parseEther("10") - 1n];
+    // Com 10 CAS menos duas unidades mínimas, vender exatamente a metade deixaria 5 CAS menos uma unidade.
+    const sizes = [parseEther("4.5"), parseEther("5"), parseEther("10") - 2n];
     for (const [i, amount] of sizes.entries()) {
       await buy(amount);
       const id = i + 1;
@@ -213,22 +242,46 @@ describe("CASInstallmentHook / Uniswap v4", function () {
       await time.setNextBlockTimestamp(lot.sellAfter - 1n);
       await hookRevert(sell(amount, id), "afterSwap", "TooEarly", [lot.sellAfter]);
       await time.setNextBlockTimestamp(lot.sellAfter);
-      await hookRevert(sell(amount - amount / 2n, id), "afterSwap", "WrongInstallment", [amount]);
+      await hookRevert(sell(amount / 2n, id), "afterSwap", "RemainderTooSmall", [amount - amount / 2n]);
       await sell(amount, id);
       expect(await cas.balanceOf(buyer.address)).to.equal(0n);
       expect(await hook.outstanding(buyer.address)).to.equal(0n);
     }
   });
 
-  it("mantém o remanescente de exatamente 5 CAS e atribui a unidade ímpar à venda em qualquer rodada", async function () {
-    const { buyer, cas, hook, sell } = await loadFixture(fixture);
+  it("deixa o titular de 9 CAS escolher uma venda menor que preserve 5 CAS ou o encerramento integral", async function () {
+    const { buyer, cas, buy, sell, hook, hookRevert } = await loadFixture(fixture);
+    const nine = parseEther("9");
+    const four = parseEther("4");
+    const five = parseEther("5");
+    // Abrimos dois lotes iguais para exercitar as duas escolhas disponíveis no mesmo estado inicial.
+    await buy(nine);
+    await buy(nine);
+    await time.increaseTo((await hook.lots(buyer.address, 2)).sellAfter);
+    await hookRevert(sell(four + 1n), "afterSwap", "RemainderTooSmall", [five - 1n]);
+    await hookRevert(sell(parseEther("8")), "afterSwap", "RemainderTooSmall", [parseEther("1")]);
+    await hookRevert(sell(nine + 1n), "afterSwap", "WrongInstallment", [nine]);
+    await sell(four);
+    const last = await hook.lots(buyer.address, 1);
+    expect([last.nextAmount, last.lastAmount]).to.deep.equal([five, 0n]);
+    await sell(nine, 2);
+    expect(await hook.outstanding(buyer.address)).to.equal(five);
+    await hookRevert(sell(five), "afterSwap", "TooEarly", [last.sellAfter]);
+    await time.setNextBlockTimestamp(last.sellAfter);
+    await sell(five);
+    expect(await cas.balanceOf(buyer.address)).to.equal(0n);
+  });
+
+  it("mantém os 5 CAS exatos e arredonda o teto para baixo mesmo quando falta uma unidade para 10 CAS", async function () {
+    const { buyer, cas, hook, sell, hookRevert } = await loadFixture(fixture);
     const five = parseEther("5");
     const ten = parseEther("10");
-    // Um lote de 10 deixa exatamente 5. No lote maior, a primeira venda deixa 10 CAS + uma
-    // unidade mínima. Na segunda, a venda recebe essa unidade e ficam exatamente 5 para a terceira.
+    // Com 10 CAS menos uma unidade, o teto é 5 CAS menos uma unidade. Ainda ficam exatamente 5 CAS,
+    // portanto o lote não pode ser fechado antecipadamente. Uma unidade ímpar fica sempre no saldo.
     const cases = [
       { balance: ten, sales: [five, five] },
-      { balance: 2n * ten + 2n, sales: [ten + 1n, five + 1n, five] },
+      { balance: ten - 1n, sales: [five - 1n, five] },
+      { balance: 2n * ten + 2n, sales: [ten + 1n, five, five + 1n] },
     ];
     for (const [i, { balance, sales }] of cases.entries()) {
       await cas.mint(buyer.address, balance);
@@ -238,7 +291,11 @@ describe("CASInstallmentHook / Uniswap v4", function () {
         const lot = await hook.lots(buyer.address, i + 1);
         remaining -= amount;
         expect([lot.nextAmount, lot.lastAmount]).to.deep.equal([amount, remaining]);
-        await time.setNextBlockTimestamp(lot.sellAfter);
+        await time.increaseTo(lot.sellAfter);
+        if (remaining > 0n) {
+          await hookRevert(sell(amount + 1n, i + 1), "afterSwap", "WrongInstallment", [amount]);
+          await hookRevert(sell(amount + remaining, i + 1), "afterSwap", "WrongInstallment", [amount]);
+        }
         await sell(amount, i + 1);
         expect(await hook.outstanding(buyer.address)).to.equal(remaining);
       }
@@ -292,7 +349,7 @@ describe("CASInstallmentHook / Uniswap v4", function () {
     // Conferimos no estado persistido que o saldo comprometido e a data do lote voltaram ao valor inicial.
     await cas.connect(buyer).approve(await router.getAddress(), 0);
     await time.setNextBlockTimestamp(lot.sellAfter);
-    await expect(router.connect(buyer).swap(keys[1], true, -HALF, 1, 1, MaxUint256))
+    await expect(router.connect(buyer).swap(keys[1], true, -parseEther("1000"), 1, 1, MaxUint256))
       .to.be.revertedWithCustomError(cas, "ERC20InsufficientAllowance");
     expect(await hook.outstanding(buyer.address)).to.equal(LOT);
     expect(Array.from(await hook.lots(buyer.address, 1))).to.deep.equal(Array.from(lot));
