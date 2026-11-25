@@ -38,6 +38,9 @@ fork("CASInstallmentHook / rollout no fork local da Polygon", function () {
       // e ao token CAS que já existem no estado copiado da Polygon.
       expect(await hook.manager()).to.equal(MANAGER);
       expect(await hook.cas()).to.equal(CAS);
+      // Lemos as casas decimais do CAS real no fork para conferir que o piso implantado equivale a 5 tokens.
+      const cas = await ethers.getContractAt(["function decimals() view returns (uint8)"], CAS);
+      expect(await hook.MIN_REMAINDER()).to.equal(ethers.parseUnits("5", await cas.decimals()));
       const state = new ethers.Contract(STATE_VIEW, [
         "function getSlot0(bytes32) view returns(uint160,int24,uint24,uint24)",
         "function getLiquidity(bytes32) view returns(uint128)",

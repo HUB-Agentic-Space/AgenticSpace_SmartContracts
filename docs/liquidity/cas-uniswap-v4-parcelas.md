@@ -1,17 +1,32 @@
-# Revenda de CAS em duas parcelas no Uniswap v4
+# Revenda de 50% do saldo remanescente de um lote de CAS no Uniswap v4
 
-Uma compra entrega CAS diretamente à carteira que pagou. Nos cinco pools participantes, cada compra abre um lote individual. O comprador pode fazer a primeira venda 24 horas depois e a segunda 24 horas depois da execução da primeira. Os horários usam o timestamp do bloco. O hook não agenda ordens nem garante preço, liquidez ou execução futura.
+Uma compra em um dos cinco pools participantes entrega o CAS diretamente à carteira e abre um lote individual. A primeira venda fica disponível 24 horas após a compra. A cada venda, o hook calcula uma nova parcela sobre **o que resta naquele lote** e inicia outras 24 horas de espera. A carteira envia uma ordem quando quiser vender, a partir do horário permitido pelo timestamp do bloco.
 
-## Exemplo com 20.000 CAS
+Cada ordem deve vender o valor integral da parcela. Normalmente, é 50% do saldo atual. **Se vender a metade deixaria menos de 5 CAS no lote, a parcela passa a ser o saldo inteiro.** Com 10 CAS, a primeira venda é de 5 e ficam exatamente 5 para a próxima. Com 9 CAS, a próxima venda é dos 9. Um lote comprado ou registrado já com menos de 5 CAS também espera 24 horas antes de poder ser vendido por inteiro.
 
-| Operação | Horário do bloco | Efeito |
-| --- | --- | --- |
-| Comprar no CAS/USDC | Segunda, 10h | A carteira recebe 20.000 CAS e o hook abre o lote 1. |
-| Tentar vender 10.000 no CAS/WPOL | Terça, 9h59 | A transação reverte. O lote continua intacto. |
-| Vender 10.000 no CAS/WETH | Terça, 16h | A primeira parcela é consumida. |
-| Vender os demais 10.000 no CAS/BRLA | A partir de quarta, 16h | A segunda parcela encerra o lote. |
+## Exemplo com 21.000 CAS
 
-Cada venda usa o **valor integral da parcela**, em unidades mínimas do CAS. Quando a quantidade é ímpar, a primeira parcela recebe a unidade excedente. Uma compra posterior abre outro lote. Uma carteira pode vender parcelas vencidas de lotes diferentes no mesmo dia. Mesmo após uma longa espera, as duas parcelas de um lote continuam separadas por 24 horas entre as vendas.
+Se a carteira vender no primeiro instante permitido em todas as rodadas, cada linha abaixo corresponde a outro dia desde a compra.
+
+| Venda | CAS vendidos | CAS que ficam no lote |
+| ---: | ---: | ---: |
+| 1 | 10.500 | 10.500 |
+| 2 | 5.250 | 5.250 |
+| 3 | 2.625 | 2.625 |
+| 4 | 1.312,5 | 1.312,5 |
+| 5 | 656,25 | 656,25 |
+| 6 | 328,125 | 328,125 |
+| 7 | 164,0625 | 164,0625 |
+| 8 | 82,03125 | 82,03125 |
+| 9 | 41,015625 | 41,015625 |
+| 10 | 20,5078125 | 20,5078125 |
+| 11 | 10,25390625 | 10,25390625 |
+| 12 | 5,126953125 | 5,126953125 |
+| 13 | 5,126953125 | 0 |
+
+Na 12ª venda, a metade que fica ainda supera 5 CAS. Na 13ª, vender metade deixaria 2,5634765625 CAS, por isso a carteira vende os 5,126953125 inteiros. O contrato calcula em unidades de 10⁻¹⁸ CAS. Quando o saldo tem um número ímpar dessas unidades, a parcela vendida recebe a unidade excedente. A soma dos valores vendidos e do saldo restante sempre recompõe o lote original.
+
+O prazo pertence ao lote e vale entre os pools participantes. Por exemplo, quem comprar na segunda às 10h no CAS/USDC e fizer a primeira venda na terça às 16h no CAS/WPOL poderá fazer a segunda a partir de quarta às 16h, inclusive no CAS/BRLA. Esperar vários dias libera a próxima parcela. Cada compra posterior abre um lote com seu próprio relógio, então a carteira pode vender parcelas vencidas de lotes diferentes no mesmo dia.
 
 ## CAS existente ou recebido por transferência
 
@@ -46,10 +61,10 @@ Uma ordem chama `router.swap(key, zeroForOne, amountSpecified, limit, lotId, dea
 
 | Ação no CAS/USDC | zeroForOne | amountSpecified | limit | lotId |
 | --- | --- | --- | --- | --- |
-| Comprar exatamente 20.000 CAS | `true` | `+20000 × 10¹⁸` | Máximo de USDC aceito, em unidades de 10⁻⁶ USDC | `0` |
-| Vender uma parcela de 10.000 CAS | `false` | `−10000 × 10¹⁸` | Mínimo de USDC aceito, em unidades de 10⁻⁶ USDC | ID de `LotOpened` |
+| Comprar exatamente 21.000 CAS | `true` | `+21000 × 10¹⁸` | Máximo de USDC aceito, em unidades de 10⁻⁶ USDC | `0` |
+| Vender a primeira parcela de 10.500 CAS | `false` | `−10500 × 10¹⁸` | Mínimo de USDC aceito, em unidades de 10⁻⁶ USDC | ID de `LotOpened` |
 
-O usuário aprova o roteador no token de entrada para o máximo que aceita gastar, confere `hook.lots(carteira, id)` e assina a ordem com `deadline` em segundos Unix. O frontend pode exibir `nextAmount`, `lastAmount` e `sellAfter` antes de solicitar a assinatura. O evento `InstallmentSold` informa o horário da parcela seguinte. Um prazo ou limite de preço expirado exige uma nova ordem.
+O usuário aprova o roteador no token de entrada para o máximo que aceita gastar e consulta `hook.lots(carteira, id)`. O frontend exibe `nextAmount` (quantidade exata a vender), `lastAmount` (saldo que ficará depois dessa venda) e `sellAfter` (primeiro instante autorizado). Se `nextAmount` for positivo e `lastAmount` for zero, a próxima venda encerra o lote. A carteira assina a ordem com seu próprio `deadline` em segundos Unix. Depois da execução, o evento `InstallmentSold` informa o horário da próxima venda, ou zero no encerramento. Preço e liquidez disponíveis no momento da ordem também condicionam a execução.
 
 ## Preparação e deploy
 
@@ -62,6 +77,8 @@ HARDHAT_FORK_URL=https://polygon.drpc.org npm run cas:v4:fork
 ```
 
 O primeiro teste usa o bytecode publicado do PoolManager v4. O teste de fork faz deploy e inicialização apenas na rede local Hardhat. O inventário usa apenas RPC de leitura. O plano aceita uma EOA ou Safe como inicializador e pode ser gerado sem chave privada.
+
+Para implantar esta regra, gere um plano com o bytecode desta versão. A revisão muda o endereço CREATE2 do hook, o roteador associado e os IDs dos pools sucessores. Se uma versão anterior tiver sido implantada, os lotes daquele contrato continuam sujeitos às regras e prazos dele. Um registro de saldo no novo hook inicia seu próprio prazo de 24 horas.
 
 ```bash
 export CAS_V4_INITIALIZER=0x...   # endereço público da EOA ou Safe escolhida
