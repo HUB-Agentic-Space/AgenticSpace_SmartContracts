@@ -8,6 +8,12 @@
     "compile": "hardhat compile",
     "clean": "hardhat clean",
     "test": "hardhat test",
+    "cas:v4:inspect": "node -r ts-node/register scripts/uniswap-v4/inspect.ts",
+    "cas:v4:test": "hardhat test --network hardhat test/uniswap-v4/CASInstallmentHook.test.ts",
+    "cas:v4:fork": "hardhat test --network hardhat test/uniswap-v4/CASInstallmentRollout.fork.test.ts",
+    "cas:v4:plan": "CAS_V4_ACTION=plan hardhat run scripts/uniswap-v4/installments.ts --network polygon",
+    "cas:v4:deploy": "CAS_V4_ACTION=deploy hardhat run scripts/uniswap-v4/installments.ts --network polygon",
+    "cas:v4:initialize": "CAS_V4_ACTION=initialize hardhat run scripts/uniswap-v4/installments.ts --network polygon",
     "test:foundry": "forge test",
     "test:coverage": "hardhat coverage",
     "typechain": "hardhat typechain",
@@ -161,6 +167,7 @@
     "typescript": "^5.5.0"
   },
   "dependencies": {
+    "@uniswap/v4-core": "1.0.2",
     "agentic_space_commons": "file:../agentic_space_commons",
     "better-sqlite3": "^12.11.1",
     "puppeteer-core": "^22.15.0"
