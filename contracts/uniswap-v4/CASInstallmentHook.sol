@@ -15,10 +15,10 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {CASInstallmentRouter} from "./CASInstallmentRouter.sol";
 
-/// @title Revenda de metade do saldo remanescente de cada lote de CAS no Uniswap v4
-/// @notice Um lote de 21.000 CAS libera 10.500 após 24 horas, depois 5.250 e depois 2.625.
-///         Cada venda efetiva inicia outra espera de 24 horas. Se vender metade deixaria menos
-///         de 5 CAS, a parcela passa a ser o saldo inteiro e essa venda encerra o lote.
+/// @title Revenda de até metade do saldo remanescente de cada lote de CAS no Uniswap v4
+/// @notice Após 24 horas, um lote de 21.000 CAS permite vender até 10.500. Se forem vendidos
+///         3.000, ficam 18.000 e o próximo teto é 9.000, após outras 24 horas. Quando a venda
+///         do máximo de 50% deixaria menos de 5 CAS, o titular também pode encerrar o lote inteiro.
 /// @dev Um hook é um contrato que o PoolManager chama em momentos específicos. Aqui, beforeInitialize
 ///      confere a origem do novo pool e afterSwap registra uma compra ou valida uma venda. Os tokens
 ///      vão para a carteira. O que este contrato guarda são quantidades, prazos e direitos de venda.
@@ -40,9 +40,9 @@ contract CASInstallmentHook {
     // O valor padrão de uma entrada de mapping é false. O construtor marca os IDs dos pools de origem.
     mapping(PoolId => bool) public sourceAllowed;
 
-    // nextAmount é o valor exato da próxima venda. lastAmount é o saldo que ficará depois dela.
-    // A soma é o saldo atual do lote. Preservamos os nomes usados por quem já consulta lots().
-    // Por exemplo, após a primeira venda de um lote de 21.000, estes campos valem 5.250 e 5.250.
+    // nextAmount é o MAIOR valor vendável. lastAmount é o que ficaria se a carteira vendesse esse máximo.
+    // Sua soma é sempre o saldo atual do lote. Em um lote ativo, lastAmount zero indica que é possível
+    // quitar o lote. Ainda se pode vender menos se sobrarem pelo menos 5 CAS.
     struct Lot {
         uint128 nextAmount;
         uint128 lastAmount;
@@ -72,12 +72,15 @@ contract CASInstallmentHook {
     error LotsExceedBalance(uint256 booked, uint256 balance);
     error UnknownLot();
     error TooEarly(uint64 sellAfter);
+    /// @notice O valor solicitado superou o maior valor vendável nesta rodada.
     error WrongInstallment(uint128 expected);
+    /// @notice Uma venda parcial deixaria um saldo positivo abaixo do piso de 5 CAS.
+    error RemainderTooSmall(uint128 remaining);
 
     /// @notice Anuncia o ID do novo lote e a data da primeira venda. Pool zero indica registro de saldo externo.
     /// @dev Os campos indexed permitem filtrar os logs por carteira, lote ou pool ao ler o recibo da transação.
     event LotOpened(address indexed wallet, uint256 indexed lotId, PoolId indexed pool, uint128 amount, uint64 sellAfter);
-    /// @notice Informa a parcela consumida. nextSale igual a zero indica o encerramento do lote.
+    /// @notice Informa o CAS efetivamente vendido. nextSale igual a zero indica o encerramento do lote.
     event InstallmentSold(address indexed wallet, uint256 indexed lotId, PoolId indexed pool, uint128 amount, uint64 nextSale);
     /// @notice Identifica até qual lote os direitos de venda foram descartados.
     event LotsDiscarded(address indexed wallet, uint256 throughLotId);
@@ -219,17 +222,16 @@ contract CASInstallmentHook {
         return (IHooks.afterSwap.selector, 0);
     }
 
-    /// @dev Calcula a próxima venda exclusivamente a partir do saldo atual deste lote.
-    ///      A mesma função agenda tanto a primeira venda quanto as seguintes.
+    /// @dev Calcula o teto de uma venda a partir do saldo atual e inicia o intervalo deste lote.
     function _scheduleNext(Lot storage lot, uint128 balance) private returns (uint64 sellAfter) {
-        // A divisão inteira retém no lote a metade arredondada para baixo. Subtraí-la do total
-        // atribui à venda a unidade mínima excedente quando a quantidade é ímpar.
-        uint128 remainder = balance / 2;
-        // Com 10 CAS, restariam exatamente 5, e a venda é de 5. Com 9 CAS, restariam 4,5.
-        // Nesse caso zeramos o remanescente e os 9 CAS compõem a própria parcela.
-        if (remainder < MIN_REMAINDER) remainder = 0;
-        lot.nextAmount = balance - remainder;
-        lot.lastAmount = remainder;
+        // A divisão de inteiros sem sinal arredonda o teto para baixo. Se houver uma unidade
+        // indivisível, ela fica no lote. Assim uma venda comum jamais ultrapassa os 50%.
+        uint128 maximum = balance / 2;
+        // Com 10 CAS, vender 5 deixaria exatamente 5. Com 9 CAS, vender 4,5 deixaria 4,5,
+        // por isso também liberamos a quitação dos 9. _sell confere a sobra de uma escolha parcial.
+        if (balance - maximum < MIN_REMAINDER) maximum = balance;
+        lot.nextAmount = maximum;
+        lot.lastAmount = balance - maximum;
         // O relógio parte deste bloco, seja ele o da compra, do registro ou da venda anterior.
         sellAfter = uint64(block.timestamp + INTERVAL);
         lot.sellAfter = sellAfter;
@@ -245,15 +247,18 @@ contract CASInstallmentHook {
         emit LotOpened(wallet, id, pool, amount, sellAfter);
     }
 
-    /// @dev Consome uma parcela integral. pool identifica o local da venda para o evento.
+    /// @dev Debita somente o CAS efetivamente vendido. pool identifica o local da venda para o evento.
     function _sell(address wallet, uint256 id, uint128 amount, PoolId pool) private {
-        // storage aponta para o registro persistente. As verificações precedem qualquer escrita.
-        // A igualdade no instante sellAfter já permite vender. Uma venda menor também reverte,
-        // pois cada parcela corresponde a uma única execução integral.
+        // afterSwap só chega aqui com amount positivo. O limite vale a partir do segundo exato
+        // de sellAfter. A carteira pode escolher uma quantidade menor e usar outro pool participante.
         Lot storage lot = _lots[wallet][id];
         if (lot.nextAmount == 0 || id <= discardedThrough[wallet]) revert UnknownLot();
         if (block.timestamp < lot.sellAfter) revert TooEarly(lot.sellAfter);
-        if (amount != lot.nextAmount) revert WrongInstallment(lot.nextAmount);
+        if (amount > lot.nextAmount) revert WrongInstallment(lot.nextAmount);
+        // Os campos somam o saldo antes da venda. Subtraímos apenas o valor que saiu no swap.
+        // Com 9 CAS, por exemplo, vender até 4 preserva o piso. Vender os 9 deixa zero e encerra o lote.
+        uint128 remaining = lot.nextAmount + lot.lastAmount - amount;
+        if (remaining != 0 && remaining < MIN_REMAINDER) revert RemainderTooSmall(remaining);
         // O débito ERC-20 ocorrerá depois deste callback. Exigimos saldo para TODOS os lotes pendentes
         // antes da venda. Isso protege o saldo de uma compra nova caso o titular já tenha transferido
         // os tokens de um lote antigo. Como CAS é fungível, esta checagem mede cobertura atual.
@@ -264,12 +269,11 @@ contract CASInstallmentHook {
         // nextSale começa em zero. Se esta era a última parcela, delete zera o registro e o zero
         // no evento comunica seu encerramento. O contador de IDs da carteira continua crescente.
         uint64 nextSale;
-        uint128 remaining = lot.lastAmount;
         if (remaining == 0) {
             delete _lots[wallet][id];
         } else {
-            // Vendida a parcela autorizada, o que sobrou vira a base do novo cálculo. Se a venda
-            // ocorreu na terça às 16h, a próxima só poderá acontecer a partir de quarta às 16h.
+            // Mesmo uma venda pequena usa a rodada. O saldo real que sobrou define o novo teto.
+            // Se a venda ocorreu na terça às 16h, a próxima só poderá ocorrer na quarta às 16h ou depois.
             nextSale = _scheduleNext(lot, remaining);
         }
         emit InstallmentSold(wallet, id, pool, amount, nextSale);
