@@ -17,14 +17,23 @@
  * 2+ = Fases futuras (genéricas/extensíveis)
  *
  * Requisitos de ambiente (smartcontracts/.env):
- *   AI_API, AI_API_KEY, AI_MODEL — OpenRouter
- *   CAS_TOKEN_ADDRESS, POLYGONSCAN_API_KEY, POLYGON_RPC_URL
+ *   AI_API_KEY, AI_MODEL — OpenRouter (opcional; cadeia de modelos :free)
+ *   OLLAMA_MODEL, OLLAMA_BASE_URL ou OLLAMA_URL — fallback local ao
+ *   primeiro erro de crédito/cota (ver scripts/utils/genai_client.ts)
+ *   CAS_TOKEN_ADDRESS, ETHERSCAN_API_KEY ou POLYGONSCAN_API_KEY, POLYGON_RPC_URL
  */
 
 import { formatUnits } from "agentic_space_commons";
 import * as fs from "fs";
 import * as path from "path";
 import dotenv from "dotenv";
+import { generateCompletion, tryJsonToHtml } from "../utils/genai_client";
+import { scanRequest, fetchTotalSupply, hasApiKey, type TokenTransfer } from "../utils/cas_sync";
+import {
+  WHALE_FILTER_JS,
+  buildWhaleThresholdSelect,
+  whaleMinThreshold,
+} from "../utils/cas_report_charts";
 
 // ── Env loading ───────────────────────────────────────────────────────
 
@@ -34,11 +43,6 @@ dotenv.config({ path: path.join(SC_ROOT, ".env") });
 const DATA_DIR = path.join(SC_ROOT, "data");
 const REPORTS_DIR = path.join(SC_ROOT, "reports");
 const CAS_TOKEN_ADDRESS = process.env.CAS_TOKEN_ADDRESS || "";
-const POLYGONSCAN_API_KEY = process.env.POLYGONSCAN_API_KEY || "";
-const AI_API_KEY = process.env.AI_API_KEY?.trim() || "";
-const AI_MODEL = process.env.AI_MODEL?.trim() || "";
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL?.trim() || "granite4:small-h";
-const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL?.trim() || "http://localhost:11434";
 const RAPPORT_CERTIFICATE_ADDRESS = process.env.RAPPORT_CERTIFICATE_ADDRESS?.trim() || "";
 const OLD_RAPPORT_CERTIFICATE_ADDRESS = process.env.OLD_RAPPORT_CERTIFICATE_ADDRESS?.trim() || "";
 const POLYGON_RPC_URL = process.env.POLYGON_RPC_URL?.trim() || "https://polygon-rpc.com";
@@ -46,11 +50,6 @@ const POLYGON_RPC_URL = process.env.POLYGON_RPC_URL?.trim() || "https://polygon-
 const TARGET_ACCOUNTS = 1000;
 const DECIMALS = 18;
 const ZERO = "0x0000000000000000000000000000000000000000";
-const CHAIN_ID = 137;
-const API_BASES = [
-  "https://api.polygonscan.com/api",
-  "https://api.etherscan.io/v2/api",
-];
 
 // ── Anonymization levels (LGPD) ──────────────────────────────────────
 
@@ -373,126 +372,7 @@ function loadAirdropCsv(dataDir: string): AirdropRecord[] {
   return records;
 }
 
-// ── Polygonscan API client ─────────────────────────────────────────────
-
-const MAX_RETRIES = 5;
-const REQUEST_TIMEOUT_MS = 15_000;
-const RATE_LIMIT_EXTRA_DELAY_MS = 2_000;
-const RATE_LIMIT_DELAY_MS = 350;
-let pinnedBase: string | null = null;
-
-function isTransientError(status: number, message: string): boolean {
-  if (status === 429) return true;
-  if (status >= 500 && status < 600) return true;
-  const lower = message.toLowerCase();
-  if (lower.includes("rate limit") || lower.includes("max rate") || lower.includes("too many requests")) return true;
-  return false;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function scanRequest(params: Record<string, string>): Promise<unknown> {
-  await sleep(RATE_LIMIT_DELAY_MS);
-
-  let lastError: Error | null = null;
-  const bases = pinnedBase
-    ? [pinnedBase, ...API_BASES.filter((b) => b !== pinnedBase)]
-    : API_BASES;
-
-  for (const base of bases) {
-    const isEtherscanV2 = base.includes("etherscan.io/v2");
-    const apiKey = isEtherscanV2
-      ? (process.env.ETHERSCAN_API_KEY?.trim() || POLYGONSCAN_API_KEY)
-      : POLYGONSCAN_API_KEY;
-    const url = new URL(base);
-    if (isEtherscanV2) url.searchParams.set("chainid", String(CHAIN_ID));
-    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-    url.searchParams.set("apikey", apiKey);
-
-    log("DEBUG", "scanRequest", "Tentando base", {
-      base: base.split("/").pop(),
-      action: params.action,
-      hasApiKey: apiKey.length > 0,
-    });
-
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        const res = await fetchWithTimeout(url.toString(), REQUEST_TIMEOUT_MS);
-        if (!res.ok) {
-          const msg = `HTTP ${res.status}`;
-          if (isTransientError(res.status, msg) && attempt < MAX_RETRIES) {
-            const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
-            const extraDelay = res.status === 429 ? RATE_LIMIT_EXTRA_DELAY_MS : 0;
-            log("WARN", "scanRequest", "Erro transitório, retrying", { attempt, status: res.status, backoffMs: Math.round(backoff + extraDelay) });
-            await sleep(backoff + extraDelay);
-            continue;
-          }
-          throw new Error(msg);
-        }
-        const contentType = res.headers.get("content-type") ?? "";
-        if (!contentType.includes("application/json")) {
-          const textBody = await res.text();
-          const isHtml = textBody.trimStart().startsWith("<");
-          const detail = isHtml ? "Resposta HTML (possível Cloudflare/rate-limit)" : textBody.slice(0, 200);
-          if (isTransientError(res.status, detail) && attempt < MAX_RETRIES) {
-            const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
-            await sleep(backoff + RATE_LIMIT_EXTRA_DELAY_MS);
-            continue;
-          }
-          throw new Error(`Resposta não-JSON: ${detail}`);
-        }
-        const body = (await res.json()) as { status: string; message: string; result: unknown };
-        if (body.status === "1" || (body.status === "0" && body.message === "No transactions found")) {
-          if (pinnedBase === null) pinnedBase = base;
-          return body.result;
-        }
-        const resultStr = typeof body.result === "string" ? body.result : JSON.stringify(body.result);
-        const combinedMsg = `${body.message} ${resultStr}`;
-        if (isTransientError(0, combinedMsg) && attempt < MAX_RETRIES) {
-          const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
-          await sleep(backoff + RATE_LIMIT_EXTRA_DELAY_MS);
-          continue;
-        }
-        throw new Error(`API status=${body.status} message=${body.message} result=${resultStr.slice(0, 200)}`);
-      } catch (err) {
-        const errMsg = (err as Error).message;
-        const isAbort = errMsg.includes("abort") || errMsg.includes("timeout");
-        if ((isAbort || isTransientError(0, errMsg)) && attempt < MAX_RETRIES) {
-          const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
-          await sleep(backoff);
-          continue;
-        }
-        lastError = err as Error;
-        log("WARN", "scanRequest", "Falha na base, tentando fallback", { base, error: errMsg, attempt });
-        break;
-      }
-    }
-  }
-  throw lastError ?? new Error("Todas as bases da API falharam após retries");
-}
-
 // ── On-chain data fetch ────────────────────────────────────────────────
-
-interface TokenTransfer {
-  hash: string;
-  from: string;
-  to: string;
-  value: string;
-  timeStamp: string;
-  blockNumber: string;
-}
 
 async function fetchAllTransfers(tokenAddress: string): Promise<TokenTransfer[]> {
   const MAX_BLOCK = 999_999_999;
@@ -549,15 +429,6 @@ async function fetchAllTransfers(tokenAddress: string): Promise<TokenTransfer[]>
 
   log("OK", "fetchAllTransfers", "Transferências obtidas", { total: allTransfers.length });
   return allTransfers;
-}
-
-async function fetchTotalSupply(tokenAddress: string): Promise<bigint> {
-  const result = (await scanRequest({
-    module: "stats",
-    action: "tokensupply",
-    contractaddress: tokenAddress,
-  })) as string;
-  return BigInt(result);
 }
 
 function computeHolders(transfers: TokenTransfer[], totalSupply: bigint): OnChainHolder[] {
@@ -774,19 +645,14 @@ function computeMetrics(
   };
 }
 
-// ── AI suggestion generator (OpenRouter) ──────────────────────────────
+// ── AI suggestion generator (OpenRouter → Ollama local) ───────────────
 
-async function generateAiSuggestion(
+function buildAiPrompt(
   phase: PhaseInfo,
   metrics: CampaignMetrics,
   totalSupply: bigint,
   anon: AnonConfig,
-): Promise<string> {
-  if (!AI_API_KEY || !AI_MODEL) {
-    log("WARN", "generateAiSuggestion", "AI_API_KEY/AI_MODEL ausentes; pulando sugestão IA");
-    return "<p><em>Sugestão de IA indisponível: configure AI_API_KEY e AI_MODEL no .env.</em></p>";
-  }
-
+): string {
   const groupSummary = [...metrics.groupDistribution.entries()]
     .sort((a, b) => b[1] - a[1])
     .map(([g, q]) => `${anonGroupLabel(g, anon.level)}: ${q.toFixed(2)} CAS`)
@@ -796,7 +662,7 @@ async function generateAiSuggestion(
     ? `\n- Certificados NFT emitidos: ${metrics.certificates.totalCertificates}\n- Holders de certificado únicos: ${metrics.certificates.uniqueHolders}\n- Fases de certificado: ${metrics.certificates.phaseCount}\n- Fase atual: ${metrics.certificates.currentPhaseId > 0 ? metrics.certificates.phases.find(p => p.id === metrics.certificates!.currentPhaseId)?.name || "N/A" : "Nenhuma ativa"}\n- Emitidos por fase: ${metrics.certificates.phases.map(p => `${p.name} (${p.id}): ${p.minted}`).join(", ") || "nenhuma"}\n- Engajamento (cert/holders on-chain): ${metrics.onChainHolders > 0 ? (metrics.certificates.uniqueHolders / metrics.onChainHolders * 100).toFixed(1) : "0"}%`
     : "\n- Certificados NFT: dados não disponíveis";
 
-  const prompt = `Você é um estrategista sênior de marketing cripto e growth hacking assessorando a Rapport Tecnologia no projeto Agentic Space.
+  return `Você é um estrategista sênior de marketing cripto e growth hacking assessorando a Rapport Tecnologia no projeto Agentic Space.
 O token CAS (Chain: Polygon Mainnet, endereço: ${CAS_TOKEN_ADDRESS}) está em campanha de AirDrop com meta de ${TARGET_ACCOUNTS} contas (holders on-chain com saldo > 0).
 
 FASE ATUAL: ${phase.id} — ${phase.name}
@@ -826,150 +692,48 @@ Produza em português, em formato HTML simples (apenas <h3>, <p>, <ul>, <li>, <s
 4. <h3>Recomendações Estratégicas</h3> — ações concretas e priorizadas para esta fase.
 5. <h3>Próximos Passos</h3> — orientações práticas para o administrador executar agora.
 Seja específico com os números fornecidos.`;
-
-  const FALLBACK_MODELS = [
-    "google/gemini-2.5-flash-lite",
-    "meta-llama/llama-3.3-70b-instruct",
-    "google/gemma-3-27b-it",
-    "deepseek/deepseek-r1",
-    "meta-llama/llama-3.2-3b-instruct",
-    "qwen/qwen-2.5-7b-instruct:free",
-    "mistralai/mistral-7b-instruct:free",
-  ];
-  const modelsToTry = [AI_MODEL, ...FALLBACK_MODELS.filter((m) => m !== AI_MODEL)];
-
-  for (const tryModel of modelsToTry) {
-    log("INFO", "generateAiSuggestion", "Chamando OpenRouter", { model: tryModel });
-    try {
-      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${AI_API_KEY}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": "https://agenticspace.rapport.tec.br",
-          "X-Title": "AirDrop CAS Campaign Report",
-        },
-        body: JSON.stringify({
-          model: tryModel,
-          messages: [{ role: "user", content: prompt }],
-          temperature: 0.3,
-          max_tokens: 4096,
-        }),
-      });
-      if (!res.ok) {
-        const errBody = await res.text();
-        throw new Error(`HTTP ${res.status}: ${errBody.slice(0, 200)}`);
-      }
-      const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-      const content = data.choices?.[0]?.message?.content?.trim();
-      if (!content) throw new Error("Resposta vazia do modelo");
-      if (content.length < 100 || /^user safety/i.test(content)) {
-        throw new Error(`Resposta insuficiente ou filtro de segurança (${content.length} chars): ${content.slice(0, 80)}`);
-      }
-      log("OK", "generateAiSuggestion", "Sugestão IA recebida", { model: tryModel, chars: content.length });
-      return markdownToHtml(content);
-    } catch (err) {
-      log("WARN", "generateAiSuggestion", "Modelo falhou, tentando próximo", {
-        model: tryModel,
-        error: (err as Error).message,
-      });
-    }
-  }
-
-  log("WARN", "generateAiSuggestion", "Todos os modelos OpenRouter falharam, tentando Ollama local", { model: OLLAMA_MODEL, baseUrl: OLLAMA_BASE_URL });
-  const ollamaHtml = await generateOllamaSuggestion(phase, metrics, totalSupply, anon);
-  return ollamaHtml;
 }
 
-// ── Ollama local fallback ─────────────────────────────────────────────
-
-async function generateOllamaSuggestion(
+async function generateAiSuggestion(
   phase: PhaseInfo,
   metrics: CampaignMetrics,
   totalSupply: bigint,
   anon: AnonConfig,
 ): Promise<string> {
-  if (!OLLAMA_MODEL) {
-    log("ERROR", "generateOllamaSuggestion", "OLLAMA_MODEL não configurado");
-    return "<p><em>Falha ao gerar sugestão IA: OpenRouter indisponível e Ollama não configurado.</em></p>";
+  const prompt = buildAiPrompt(phase, metrics, totalSupply, anon);
+
+  // Cadeia compartilhada (scripts/utils/genai_client.ts): AI_MODEL →
+  // modelos :free verificados no catálogo → Ollama local (melhor modelo
+  // instalado primeiro) ao primeiro erro de crédito/cota.
+  const result = await generateCompletion({
+    prompt,
+    maxTokens: 4096,
+    minContentChars: 100,
+    temperature: 0.3,
+    title: "AirDrop CAS Campaign Report",
+    log,
+  });
+
+  if (!result) {
+    log("ERROR", "generateAiSuggestion", "Todos os provedores GenAI falharam");
+    return "<p><em>Falha ao gerar sugestão IA: OpenRouter indisponível e nenhum modelo local do Ollama respondeu. Verifique AI_API_KEY/créditos ou rode <code>ollama pull &lt;modelo&gt;</code>.</em></p>";
   }
 
-  const groupSummary = [...metrics.groupDistribution.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .map(([g, q]) => `${anonGroupLabel(g, anon.level)}: ${q.toFixed(2)} CAS`)
-    .join(" | ");
-
-  const certSummary = metrics.certificates
-    ? `\n- Certificados NFT emitidos: ${metrics.certificates.totalCertificates}\n- Holders de certificado únicos: ${metrics.certificates.uniqueHolders}\n- Fases de certificado: ${metrics.certificates.phaseCount}\n- Fase atual: ${metrics.certificates.currentPhaseId > 0 ? metrics.certificates.phases.find(p => p.id === metrics.certificates!.currentPhaseId)?.name || "N/A" : "Nenhuma ativa"}\n- Emitidos por fase: ${metrics.certificates.phases.map(p => `${p.name} (${p.id}): ${p.minted}`).join(", ") || "nenhuma"}\n- Engajamento (cert/holders on-chain): ${metrics.onChainHolders > 0 ? (metrics.certificates.uniqueHolders / metrics.onChainHolders * 100).toFixed(1) : "0"}%`
-    : "\n- Certificados NFT: dados não disponíveis";
-
-  const prompt = `Você é um estrategista sênior de marketing cripto e growth hacking assessorando a Rapport Tecnologia no projeto Agentic Space.
-O token CAS (Chain: Polygon Mainnet) está em campanha de AirDrop com meta de ${TARGET_ACCOUNTS} contas (holders on-chain com saldo > 0).
-
-FASE ATUAL: ${phase.id} — ${phase.name}
-Descrição da fase: ${phase.description}
-
-DADOS ATUAIS:
-- Meta de contas: ${TARGET_ACCOUNTS}
-- Holders on-chain reais (saldo > 0): ${metrics.onChainHolders}
-- Progresso: ${metrics.progressPct.toFixed(2)}% da meta
-- Gap restante: ${metrics.gap} contas
-- Total distribuído no CSV: ${metrics.totalDistributedCsv.toFixed(2)} CAS
-- Registros no CSV: ${metrics.csvRecordCount}
-- Endereços únicos resolvíveis no CSV: ${metrics.uniqueAddressesInCsv}
-- Taxa de retenção (CSV → on-chain): ${metrics.retentionRate.toFixed(2)}%
-- Supply total: ${toNum(totalSupply).toFixed(0)} CAS
-- Distribuição por grupo: ${groupSummary || "nenhum grupo registrado"}
-- Dados de certificados NFT (engajamento):${certSummary}
-
-${phase.id === 0 ? "CONTEXTO: A distribuição gratuita já foi executada. Avalie os resultados e sugira ações para a próxima fase. Os certificados NFT (RapportCertificate, ERC-721 + ERC-6551 TBA) são a principal métrica de engajamento — cada certificado requer aporte de 50 CAS e gera uma Token Bound Account." : ""}
-${phase.id === 1 ? "CONTEXTO: Nova campanha de certificados (RapportCertificate, ERC-721 + ERC-6551). Cada certificado requer aporte de 50 CAS. Ênfase em treinamentos e desafios. Sugira estratégias para atrair e engajar novos usuários via certificados. Use os dados de certificados emitidos para avaliar o engajamento real." : ""}
-${phase.id >= 2 ? "CONTEXTO: Fase futura e genérica. Sugira estratégias inovadoras para expandir a base de usuários e consolidar o token CAS no ecossistema. Considere os dados de certificados NFT como métrica de engajamento." : ""}
-
-Produza em português, em formato HTML simples (apenas <h3>, <p>, <ul>, <li>, <strong>, <table>, <tr>, <td>, <th>), sem markdown:
-1. <h3>Diagnóstico da Fase</h3> — avaliação objetiva do progresso atual contra a meta.
-2. <h3>Pontos Fortes</h3> — o que está funcionando bem.
-3. <h3>Gaps e Riscos</h3> — o que precisa de atenção imediata.
-4. <h3>Recomendações Estratégicas</h3> — ações concretas e priorizadas para esta fase.
-5. <h3>Próximos Passos</h3> — orientações práticas para o administrador executar agora.
-Seja específico com os números fornecidos.`;
-
-  log("INFO", "generateOllamaSuggestion", "Chamando Ollama local", { model: OLLAMA_MODEL, baseUrl: OLLAMA_BASE_URL });
-
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 120_000);
-    const res = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: OLLAMA_MODEL,
-        prompt,
-        stream: false,
-        options: { temperature: 0.3, num_predict: 4096 },
-      }),
-      signal: controller.signal,
+  const content = result.content.trim();
+  if (content.length < 100 || /^user safety/i.test(content)) {
+    log("WARN", "generateAiSuggestion", "Resposta insuficiente ou filtro de segurança", {
+      provider: result.provider,
+      model: result.model,
+      chars: content.length,
     });
-    clearTimeout(timer);
-
-    if (!res.ok) {
-      const errBody = await res.text();
-      throw new Error(`HTTP ${res.status}: ${errBody.slice(0, 200)}`);
-    }
-
-    const data = (await res.json()) as { response?: string };
-    const content = data.response?.trim();
-    if (!content) throw new Error("Resposta vazia do Ollama");
-    if (content.length < 100 || /^user safety/i.test(content)) {
-      throw new Error(`Resposta insuficiente do Ollama (${content.length} chars)`);
-    }
-
-    log("OK", "generateOllamaSuggestion", "Sugestão IA recebida via Ollama", { model: OLLAMA_MODEL, chars: content.length });
-    return markdownToHtml(content);
-  } catch (err) {
-    log("ERROR", "generateOllamaSuggestion", "Ollama falhou", { model: OLLAMA_MODEL, error: (err as Error).message });
-    return `<p><em>Falha ao gerar sugestão IA: OpenRouter indisponível (sem créditos) e Ollama local falhou (${escapeHtml((err as Error).message)}). Verifique se o Ollama está rodando com o modelo ${escapeHtml(OLLAMA_MODEL)}.</em></p>`;
+    return `<p><em>Falha ao gerar sugestão IA: resposta insuficiente do modelo ${escapeHtml(result.model)} (${content.length} chars).</em></p>`;
   }
+
+  const providerLabel = result.provider === "ollama" ? "Ollama (local)" : "OpenRouter";
+  // Modelos fine-tuned de saída estruturada respondem JSON — converte
+  // para blocos h3/p; demais respostas seguem o markdownToHtml usual.
+  const body = tryJsonToHtml(content) ?? markdownToHtml(content);
+  return `<p style="font-size:.75rem;color:var(--muted);margin-bottom:12px;">Gerado por <strong>${providerLabel}</strong> · modelo <code>${escapeHtml(result.model)}</code></p>${body}`;
 }
 
 // ── HTML helpers ───────────────────────────────────────────────────────
@@ -1117,19 +881,25 @@ function buildHtml(
   const groupLabels = [...metrics.groupDistribution.keys()].map((g) => anonGroupLabel(g, anonLevel));
   const groupData = [...metrics.groupDistribution.values()].map((v) => Math.round(v * 100) / 100);
 
-  const topHolders = metrics.onChainHoldersList.slice(0, 20);
-  const holderRows = topHolders.length
-    ? topHolders
-        .map(
-          (h, i) => `<tr>
+  // Holders >= menor limiar do combobox; WHALE_FILTER_JS filtra por
+  // data-whale-pct conforme o percentual escolhido (5–30%).
+  const topHolders = metrics.onChainHoldersList
+    .map((h) => ({
+      h,
+      pct: totalSupply > 0n ? Number((h.balance * 1000000n) / totalSupply) / 10000 : 0,
+    }))
+    .filter(({ pct }) => pct >= whaleMinThreshold());
+  const holderRows = topHolders
+    .map(
+      ({ h, pct }, i) => `<tr data-whale-pct="${pct}">
       <td data-sort="${i + 1}">${i + 1}</td>
       <td>${anonHolderAddress(h.address, anonLevel)}</td>
       <td data-sort="${toNum(h.balance)}">${fmt(toNum(h.balance))} CAS</td>
-      <td>${totalSupply > 0n ? ((Number((h.balance * 1000000n) / totalSupply) / 10000)).toFixed(4) : "0"}%</td>
+      <td>${pct.toFixed(4)}%</td>
     </tr>`,
-        )
-        .join("")
-    : `<tr><td colspan="4" style="text-align:center;color:#F05F40">Nenhum holder on-chain encontrado</td></tr>`;
+    )
+    .join("")
+    + `<tr data-whale-empty${topHolders.length > 0 ? ' style="display:none"' : ""}><td colspan="4" style="text-align:center;color:#F05F40">Nenhum holder on-chain acima do limiar selecionado</td></tr>`;
 
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -1280,10 +1050,10 @@ ${metrics.certificates ? `
 ` : ""}
 
 <div class="card full" style="margin-top:16px">
-  <h3>🏆 Top 20 Holders On-Chain</h3>
+  <h3>🏆 Holders On-Chain acima de ${buildWhaleThresholdSelect("holders-threshold", { tableId: "holders-tbody", countId: "holders-count" })} do supply — <span id="holders-count">${topHolders.length}</span> carteira(s)</h3>
   <table id="holders-table">
     <thead><tr><th>#</th><th>Endereço</th><th>Saldo (CAS)</th><th>% Supply</th></tr></thead>
-    <tbody>${holderRows}</tbody>
+    <tbody id="holders-tbody">${holderRows}</tbody>
   </table>
 </div>
 
@@ -1349,6 +1119,7 @@ new Chart(document.getElementById('progressChart'), {
     },
   },
 });
+${WHALE_FILTER_JS}
 </script>
 
 </body>
@@ -1384,8 +1155,8 @@ async function main(): Promise<void> {
     log("ERROR", "main", "CAS_TOKEN_ADDRESS não configurado no .env");
     process.exit(1);
   }
-  if (!POLYGONSCAN_API_KEY) {
-    log("ERROR", "main", "POLYGONSCAN_API_KEY não configurado no .env");
+  if (!hasApiKey()) {
+    log("ERROR", "main", "ETHERSCAN_API_KEY/POLYGONSCAN_API_KEY não configurado no .env");
     process.exit(1);
   }
 
@@ -1420,7 +1191,7 @@ async function main(): Promise<void> {
     retentionRate: metrics.retentionRate.toFixed(2),
   });
 
-  log("INFO", "main", "Gerando sugestões da IA", { model: AI_MODEL });
+  log("INFO", "main", "Gerando sugestões da IA", { provider: "openrouter→ollama" });
   const aiHtml = await generateAiSuggestion(phase, metrics, totalSupply, anon);
 
   const html = buildHtml(phase, metrics, csvRecords, aiHtml, totalSupply, anon);

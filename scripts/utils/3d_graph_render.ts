@@ -45,11 +45,14 @@
  *   `window.__threeReady`, que o init aguarda antes de instanciar o grafo.
  *   A lib segue usando o three bundlado dela — mesma versão, instâncias
  *   distintas são compatíveis para objetos básicos (Mesh/Sprite/Group).
+ * - Se o import falhar (CDN offline/bloqueado), `__threeReady` ainda
+ *   resolve e `window.__threeFailed` é marcado: o init prossegue com
+ *   esferas padrão em vez de abortar silenciosamente.
  *
  * Place this in the <head> of the HTML document.
  */
 export const GRAPH_3D_CDN = `<script src="https://cdn.jsdelivr.net/npm/3d-force-graph@1.80.0/dist/3d-force-graph.min.js"></script>
-<script>window.__threeReady = import("https://cdn.jsdelivr.net/npm/three@0.179.1/build/three.module.js").then(function (m) { window.THREE = m; });</script>`;
+<script>window.__threeReady = import("https://cdn.jsdelivr.net/npm/three@0.179.1/build/three.module.js").then(function (m) { window.THREE = m; }).catch(function (e) { window.__threeFailed = e; });</script>`;
 
 // ── CSS ───────────────────────────────────────────────────────────────
 
@@ -67,7 +70,12 @@ export const GRAPH_3D_CSS = `
   #vis-custom-tooltip {
     position: fixed;
     z-index: 9999;
-    max-width: 380px;
+    max-width: 475px;
+    max-height: min(70vh, 560px);
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: #F05F40 #712d23;
     background: #712d23;
     color: #ffffff;
     border: 1px solid rgba(255,255,255,0.15);
@@ -81,6 +89,9 @@ export const GRAPH_3D_CSS = `
     transition: opacity 0.15s ease-in-out;
     display: none;
   }
+  #vis-custom-tooltip::-webkit-scrollbar { width: 6px; }
+  #vis-custom-tooltip::-webkit-scrollbar-track { background: #712d23; border-radius: 3px; }
+  #vis-custom-tooltip::-webkit-scrollbar-thumb { background: #F05F40; border-radius: 3px; }
   #vis-custom-tooltip.visible { opacity: 1; display: block; }
   #vis-custom-tooltip b { color: #fcc650; }
   #vis-custom-tooltip code { color: #f7d4ca; background: rgba(255,255,255,0.08); padding: 2px 6px; border-radius: 4px; font-size: 0.8rem; }
@@ -129,6 +140,7 @@ export const GRAPH_3D_TOOLTIP_JS = `
     var ty = y + 14;
     if (tx + rect.width > window.innerWidth - 8) tx = x - rect.width - 14;
     if (ty + rect.height > window.innerHeight - 8) ty = y - rect.height - 14;
+    if (ty + rect.height > window.innerHeight - 8) ty = Math.max(8, window.innerHeight - rect.height - 8);
     if (tx < 8) tx = 8;
     if (ty < 8) ty = 8;
     tooltipEl.style.left = tx + 'px';
@@ -149,9 +161,9 @@ export const GRAPH_3D_TOOLTIP_JS = `
     tooltipSuppressed = false;
   }
 
-  function scheduleHide() {
+  function scheduleHide(delayMs) {
     clearHideTimer();
-    hideTimer = setTimeout(hideTooltip, 300);
+    hideTimer = setTimeout(hideTooltip, delayMs || 300);
   }
 
   tooltipEl.addEventListener('mouseenter', clearHideTimer);
@@ -261,32 +273,59 @@ if (graphData.nodes.length > 0) {
 
   // O nodeThreeObject depende de window.THREE, carregado via dynamic
   // import (ver GRAPH_3D_CDN) — aguarda __threeReady antes de instanciar.
+  // __threeReady sempre resolve (catch marca __threeFailed), então o init
+  // executa mesmo com three indisponível: nós viram esferas padrão.
+  var _initPending = true;
   function _initWhenThreeReady() {
+    if (!_initPending) return;
+    _initPending = false;
     var ready = window.__threeReady || Promise.resolve();
-    ready.then(function() { _initGraph3D(container, nodes3d, links3d); });
+    ready.then(function() {
+      try {
+        _initGraph3D(container, nodes3d, links3d);
+      } catch (err) {
+        _graph3dRenderError(container, err);
+      }
+    });
   }
 
-  // If container is hidden (e.g. inside a non-active tab), defer initialization
+  function _graph3dRenderError(el, err) {
+    el.innerHTML = '<div style="padding:24px;color:#f7d4ca;font-size:.9rem;">⚠️ Falha ao renderizar o grafo 3D.<br><span style="font-size:.75rem;opacity:.8;">' +
+      String((err && err.message) || err || 'erro desconhecido') +
+      '</span></div>';
+  }
+
+  // If container is hidden (e.g. inside a non-active tab), defer
+  // initialization until it becomes visible — sem teto de tempo: o
+  // polling só termina quando o container aparece ou _graph3dEnsureInit
+  // é chamado manualmente (switchTab acelera o disparo).
   var containerVisible = container.offsetWidth > 0 && container.offsetHeight > 0;
   if (!containerVisible) {
-    // Poll until container becomes visible, then initialize
-    var _initPending = true;
     var _initInterval = setInterval(function() {
       if (container.offsetWidth > 0 && container.offsetHeight > 0 && _initPending) {
-        _initPending = false;
         clearInterval(_initInterval);
         _initWhenThreeReady();
       }
     }, 100);
-    // Safety: stop polling after 30s
-    setTimeout(function() { clearInterval(_initInterval); }, 30000);
+    window._graph3dEnsureInit = function() {
+      if (_initPending && container.offsetWidth > 0 && container.offsetHeight > 0) {
+        clearInterval(_initInterval);
+        _initWhenThreeReady();
+      }
+    };
   } else {
+    window._graph3dEnsureInit = function() { _initWhenThreeReady(); };
     _initWhenThreeReady();
   }
 
   function _initGraph3D(container, nodes3d, links3d) {
 
   var autoRotate = false;
+
+  if (typeof ForceGraph3D === "undefined") {
+    _graph3dRenderError(container, "Biblioteca 3d-force-graph não carregou (CDN offline/bloqueado). Verifique a conexão e recarregue a página.");
+    return;
+  }
 
   _graph3d = ForceGraph3D()(container)
     .graphData(_graph3dData)
@@ -424,6 +463,10 @@ if (graphData.nodes.length > 0) {
   }
 
   // ── Node 3D objects: contract geometry + always-on label sprites ──
+  // Só registra o objeto customizado quando window.THREE está disponível
+  // (dynamic import do three.module.js pode falhar offline — nesse caso
+  // o grafo renderiza com esferas padrão em vez de quebrar).
+  if (typeof THREE !== "undefined") {
   _graph3d.nodeThreeObjectExtend(function(node) { return !node.isContract; });
   _graph3d.nodeThreeObject(function(node) {
     var objects = [];
@@ -466,6 +509,7 @@ if (graphData.nodes.length > 0) {
     objects.forEach(function(o) { group.add(o); });
     return group;
   });
+  }
 
   // ── Dashed links for alerts ──
   // 3d-force-graph não implementa linkLineDash (API exclusiva do force-graph

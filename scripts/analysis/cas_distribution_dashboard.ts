@@ -1,8 +1,8 @@
 /**
  * CAS Distribution Dashboard
  * --------------------------
- * Analisa a distribuição do token CAS na Polygon Mainnet usando a API do
- * Polygonscan (Etherscan V2) e/ou dados do banco SQLite local, calcula
+ * Analisa a distribuição do token CAS na Polygon Mainnet usando a API
+ * Etherscan V2 (multichain) e/ou dados do banco SQLite local, calcula
  * métricas de concentração (Gini, HHI, Top-N, holders > 30%), gera sugestões
  * textuais via GenAI (OpenRouter) e abre um dashboard HTML rico em gráficos.
  *
@@ -51,9 +51,24 @@
  *   - aba "🚨 Manipulação" no HTML + JSON cas_manipulation_signals_*.json;
  *   - SocialSentinel opcional (SOCIAL_SENTINEL_ENABLED=true + CONSENT=true).
  *
+ * Abas do dashboard:
+ *   - "🚨 Concentração": whales, métricas Gini/HHI/Top-N e os gráficos de
+ *     distribuição normalizados em cards uniformes — pizzas de participação
+ *     (holders % supply e movers % movimentações), curva de Lorenz e
+ *     atividade diária.
+ *   - "🕸️ Grafo 3D de Transferências": force-graph 3D inicializado sob demanda
+ *     quando a aba fica visível (resiliente a falha do import do three.js).
+ *   - "🚨 Manipulação": cada linha tem painel de tooltip com detalhes do sinal.
+ *   - "🤖 Análise IA": conteúdo gerado via scripts/utils/genai_client.ts —
+ *     OpenRouter (AI_MODEL ou cadeia de modelos free atuais) e, ao primeiro
+ *     erro de crédito/quota, fallback para Ollama local com o melhor modelo
+ *     instalado primeiro (OLLAMA_MODEL/OLLAMA_BASE_URL/OLLAMA_URL).
+ *
  * Requisitos de ambiente:
- *   smartcontracts/.env : POLYGONSCAN_API_KEY, CAS_TOKEN_ADDRESS (+ labels)
- *   backend/.env        : AI_API_KEY, AI_MODEL (OpenRouter)
+ *   smartcontracts/.env : ETHERSCAN_API_KEY ou POLYGONSCAN_API_KEY,
+ *                         CAS_TOKEN_ADDRESS (+ labels)
+ *   backend/.env        : AI_API_KEY, AI_MODEL (OpenRouter),
+ *                         OLLAMA_MODEL, OLLAMA_BASE_URL ou OLLAMA_URL (fallback local)
  */
 
 import { formatUnits } from "agentic_space_commons";
@@ -76,6 +91,7 @@ import {
   getAllAddresses,
   searchAddresses,
   resolveShortAddress,
+  getPoolCreationsByToken,
   type AddressRecord,
 } from "../utils/cas_database";
 import { importAllCsvs } from "../utils/cas_csv_import";
@@ -90,6 +106,38 @@ import {
   GRAPH_3D_INIT_JS,
   GRAPH_3D_SEARCH_JS,
 } from "../utils/3d_graph_render";
+import {
+  MANIP_TOOLTIP_BIND_JS,
+  PIE_CHARTS_JS,
+  WHALE_FILTER_JS,
+  alertColor,
+  buildPieData,
+  buildWhaleThresholdSelect,
+  manipulationSignalTooltip,
+  safeJsonForScript,
+  severityToPct,
+  whaleMinThreshold,
+  type PieAlert,
+} from "../utils/cas_report_charts";
+import {
+  buildDexPoolRows,
+  buildDexPoolViews,
+  uniquePairCount,
+  type DexPoolView,
+} from "../utils/cas_dex_pools";
+import {
+  buildPoolBalanceRows,
+  fetchPoolBalances,
+  type PoolBalance,
+} from "../utils/cas_pool_balances";
+import {
+  syncTransfers,
+  syncPoolCreators,
+  fetchTotalSupply,
+  hasApiKey,
+  type TokenTransfer,
+} from "../utils/cas_sync";
+import { generateCompletion, tryJsonToHtml } from "../utils/genai_client";
 
 // ── Env loading ───────────────────────────────────────────────────────
 
@@ -115,15 +163,6 @@ function log(level: LogLevel, fn: string, message: string, params?: Record<strin
 }
 
 // ── Types ─────────────────────────────────────────────────────────────
-
-interface TokenTransfer {
-  hash: string;
-  from: string;
-  to: string;
-  value: string;
-  timeStamp: string;
-  blockNumber: string;
-}
 
 interface Holder {
   address: string;
@@ -177,6 +216,9 @@ interface MarketData {
   coingeckoVolume24h: number | null;
   dexPairs: DexPair[];
   bestPair: DexPair | null;
+  dexPools: DexPoolView[];
+  /** Saldos on-chain dos pools (aba "Saldos dos Pools"); [] quando a leitura falha. */
+  poolBalances?: PoolBalance[];
 }
 
 // ── Known address labels (env + SQLite DB) ─────────────────────────────
@@ -339,6 +381,20 @@ function knownLabels(): Map<string, KnownAddress> {
   }
 
   return map;
+}
+
+/**
+ * Extrai um mapa address→label dos knownLabels para enriquecer os
+ * símbolos dos tokens par dos pools DEX (ex.: labels cadastrados via CSV).
+ * Em --anon os labels já vêm vazios de knownLabels(), preservando a
+ * anonimização.
+ */
+function poolTokenLabels(): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [addr, info] of knownLabels()) {
+    if (info.label) out.set(addr, info.label);
+  }
+  return out;
 }
 
 // ── CSV import with NLP-like column detection ─────────────────────────
@@ -575,31 +631,10 @@ function loadAirdropPartners(
   return partners;
 }
 
-// ── Polygonscan / Etherscan V2 API ────────────────────────────────────
-
-const CHAIN_ID = 137;
-const API_BASES = [
-  "https://api.polygonscan.com/api",
-  "https://api.etherscan.io/v2/api",
-];
-
-const MAX_RETRIES = 5;
-const REQUEST_TIMEOUT_MS = 15_000;
-const RATE_LIMIT_EXTRA_DELAY_MS = 2_000;
-const RATE_LIMIT_DELAY_MS = 350;
-let pinnedBase: string | null = null;
-
-function isTransientError(status: number, message: string): boolean {
-  if (status === 429) return true;
-  if (status >= 500 && status < 600) return true;
-  const lower = message.toLowerCase();
-  if (lower.includes("rate limit") || lower.includes("max rate") || lower.includes("too many requests")) return true;
-  return false;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
+// ── HTTP helper ───────────────────────────────────────────────────────
+// Fetch com timeout via AbortController — usado pelas integrações de
+// mercado (CoinGecko, DexScreener). As chamadas à API Etherscan V2
+// (tokentx, tokensupply, eth_call) vivem em scripts/utils/cas_sync.ts.
 
 async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
   const controller = new AbortController();
@@ -611,240 +646,6 @@ async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Respons
   }
 }
 
-async function scanRequest(params: Record<string, string>): Promise<unknown> {
-  await sleep(RATE_LIMIT_DELAY_MS);
-
-  let lastError: Error | null = null;
-  const bases = pinnedBase
-    ? [pinnedBase, ...API_BASES.filter(b => b !== pinnedBase)]
-    : API_BASES;
-
-  for (const base of bases) {
-    const isEtherscanV2 = base.includes("etherscan.io/v2");
-    const apiKey = isEtherscanV2
-      ? (process.env.ETHERSCAN_API_KEY?.trim() || process.env.POLYGONSCAN_API_KEY?.trim() || "")
-      : (process.env.POLYGONSCAN_API_KEY?.trim() || "");
-    const url = new URL(base);
-    if (isEtherscanV2) url.searchParams.set("chainid", String(CHAIN_ID));
-    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-    url.searchParams.set("apikey", apiKey);
-
-    log("DEBUG", "scanRequest", "Tentando base", {
-      base: base.split("/").pop(),
-      action: params.action,
-      hasApiKey: apiKey.length > 0,
-      keySource: isEtherscanV2
-        ? (process.env.ETHERSCAN_API_KEY?.trim() ? "ETHERSCAN_API_KEY" : "POLYGONSCAN_API_KEY")
-        : "POLYGONSCAN_API_KEY",
-    });
-
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        const res = await fetchWithTimeout(url.toString(), REQUEST_TIMEOUT_MS);
-        if (!res.ok) {
-          const msg = `HTTP ${res.status}`;
-          if (isTransientError(res.status, msg) && attempt < MAX_RETRIES) {
-            const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
-            const extraDelay = res.status === 429 ? RATE_LIMIT_EXTRA_DELAY_MS : 0;
-            log("WARN", "scanRequest", "Erro transitório, retrying", {
-              base: base.split("/").pop(),
-              action: params.action,
-              attempt,
-              status: res.status,
-              backoffMs: Math.round(backoff + extraDelay),
-            });
-            await sleep(backoff + extraDelay);
-            continue;
-          }
-          throw new Error(msg);
-        }
-        const contentType = res.headers.get("content-type") ?? "";
-        if (!contentType.includes("application/json")) {
-          const textBody = await res.text();
-          const isHtml = textBody.trimStart().startsWith("<");
-          const detail = isHtml
-            ? "Resposta HTML (possível Cloudflare/rate-limit)"
-            : textBody.slice(0, 200);
-          if (isTransientError(res.status, detail) && attempt < MAX_RETRIES) {
-            const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
-            log("WARN", "scanRequest", "Resposta não-JSON, retrying", {
-              base: base.split("/").pop(),
-              action: params.action,
-              attempt,
-              contentType,
-              httpStatus: res.status,
-              backoffMs: Math.round(backoff + RATE_LIMIT_EXTRA_DELAY_MS),
-            });
-            await sleep(backoff + RATE_LIMIT_EXTRA_DELAY_MS);
-            continue;
-          }
-          throw new Error(`Resposta não-JSON (${contentType}): ${detail}`);
-        }
-        const body = (await res.json()) as { status: string; message: string; result: unknown };
-        if (body.status === "1" || (body.status === "0" && body.message === "No transactions found")) {
-          if (pinnedBase === null) pinnedBase = base;
-          return body.result;
-        }
-        const resultStr = typeof body.result === "string" ? body.result : JSON.stringify(body.result);
-        const combinedMsg = `${body.message} ${resultStr}`;
-        if (isTransientError(0, combinedMsg) && attempt < MAX_RETRIES) {
-          const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
-          log("WARN", "scanRequest", "API rate limited, retrying", {
-            base: base.split("/").pop(),
-            action: params.action,
-            attempt,
-            message: body.message,
-            result: resultStr.slice(0, 150),
-            backoffMs: Math.round(backoff + RATE_LIMIT_EXTRA_DELAY_MS),
-          });
-          await sleep(backoff + RATE_LIMIT_EXTRA_DELAY_MS);
-          continue;
-        }
-        throw new Error(`API status=${body.status} message=${body.message} result=${resultStr.slice(0, 200)}`);
-      } catch (err) {
-        const errMsg = (err as Error).message;
-        const isAbort = errMsg.includes("abort") || errMsg.includes("timeout");
-        if ((isAbort || isTransientError(0, errMsg)) && attempt < MAX_RETRIES) {
-          const backoff = Math.min(1000 * Math.pow(2, attempt - 1), 16_000) + Math.random() * 400;
-          log("WARN", "scanRequest", "Erro transitório/timeout, retrying", {
-            base: base.split("/").pop(),
-            action: params.action,
-            attempt,
-            error: errMsg,
-            backoffMs: Math.round(backoff),
-          });
-          await sleep(backoff);
-          continue;
-        }
-        lastError = err as Error;
-        log("WARN", "scanRequest", "Falha na base, tentando fallback", {
-          base,
-          action: params.action,
-          error: errMsg,
-          attempt,
-        });
-        break;
-      }
-    }
-  }
-  throw lastError ?? new Error("Todas as bases da API falharam após retries");
-}
-
-/**
- * Sync incremental: busca apenas transferências novas do Polygonscan
- * e armazena no SQLite. Retorna todas as transferências do banco.
- */
-async function fetchAllTransfers(tokenAddress: string): Promise<TokenTransfer[]> {
-  const MAX_BLOCK = 999_999_999;
-  const PAGE_SIZE = 10_000;
-
-  getDB();
-
-  const lastSyncedBlock = getLastBlockNumber();
-  const dbCount = getTransactionCount();
-  log("INFO", "fetchAllTransfers", "Sync incremental via paginação sequencial", {
-    token: tokenAddress, dbTxCount: dbCount, lastSyncedBlock,
-  });
-
-  const startBlock = lastSyncedBlock > 0 ? lastSyncedBlock + 1 : 0;
-  let currentStartBlock = startBlock;
-  let newCount = 0;
-
-  for (;;) {
-    let result: TokenTransfer[] | string;
-    try {
-      result = await scanRequest({
-        module: "account",
-        action: "tokentx",
-        contractaddress: tokenAddress,
-        startblock: String(currentStartBlock),
-        endblock: String(MAX_BLOCK),
-        offset: String(PAGE_SIZE),
-        sort: "asc",
-      }) as TokenTransfer[] | string;
-    } catch (err) {
-      log("ERROR", "fetchAllTransfers", "Falha ao buscar página após retries", {
-        startBlock: currentStartBlock,
-        error: (err as Error).message,
-        newCount,
-      });
-      if (dbCount + newCount > 0) {
-        log("WARN", "fetchAllTransfers", "Prosseguindo com dados parciais", { dbCount, newCount });
-        break;
-      }
-      throw err;
-    }
-
-    if (!Array.isArray(result) || result.length === 0) break;
-
-    for (const t of result) {
-      const isMint = t.from.toLowerCase() === ZERO ? 1 : 0;
-      const isBurn = t.to.toLowerCase() === ZERO ? 1 : 0;
-
-      insertTransaction({
-        tx_hash: t.hash,
-        block_number: parseInt(t.blockNumber, 10),
-        timestamp: parseInt(t.timeStamp, 10),
-        from_address: t.from,
-        to_address: t.to,
-        value: t.value,
-        is_mint: isMint,
-        is_burn: isBurn,
-        label: "",
-        description: "",
-      });
-
-      if (!isMint) upsertAddress(t.from, "", "eoa", false);
-      if (!isBurn) upsertAddress(t.to, "", "eoa", false);
-    }
-
-    newCount += result.length;
-    const lastTxBlock = parseInt(result[result.length - 1].blockNumber, 10);
-
-    log("DEBUG", "fetchAllTransfers", "Página sincronizada", {
-      startBlock: currentStartBlock,
-      count: result.length,
-      newCount,
-      lastTxBlock,
-    });
-
-    if (result.length < PAGE_SIZE) break;
-    currentStartBlock = lastTxBlock + 1;
-  }
-
-  if (newCount > 0) {
-    recalculateAllAddressStats();
-    setSyncState("last_sync", new Date().toISOString());
-  }
-
-  const totalCount = getTransactionCount();
-  log("OK", "fetchAllTransfers", "Sync concluído", {
-    newTx: newCount,
-    totalDbTx: totalCount,
-  });
-
-  const dbTxs = getAllTransactionsFromDB();
-  const transfers = dbTxs.map((t) => ({
-    hash: t.tx_hash,
-    from: t.from_address,
-    to: t.to_address,
-    value: t.value,
-    timeStamp: String(t.timestamp),
-    blockNumber: String(t.block_number),
-  }));
-
-  transfers.sort((a, b) => parseInt(a.blockNumber, 10) - parseInt(b.blockNumber, 10));
-  return transfers;
-}
-
-async function fetchTotalSupply(tokenAddress: string): Promise<bigint> {
-  const result = (await scanRequest({
-    module: "stats",
-    action: "tokensupply",
-    contractaddress: tokenAddress,
-  })) as string;
-  return BigInt(result);
-}
 
 // ── CoinGecko API ─────────────────────────────────────────────────────
 
@@ -1093,16 +894,9 @@ function computeMetrics(transfers: TokenTransfer[], totalSupply: bigint): Metric
   };
 }
 
-// ── GenAI (OpenRouter) ────────────────────────────────────────────────
+// ── GenAI (OpenRouter → Ollama local) ─────────────────────────────────
 
 async function generateAiAnalysis(metrics: Metrics, marketData: MarketData): Promise<string> {
-  const apiKey = process.env.AI_API_KEY?.trim();
-  const model = process.env.AI_MODEL?.trim();
-  if (!apiKey || !model) {
-    log("WARN", "generateAiAnalysis", "AI_API_KEY/AI_MODEL ausentes; pulando análise GenAI");
-    return "<p><em>Análise GenAI indisponível: configure AI_API_KEY e AI_MODEL em backend/.env.</em></p>";
-  }
-
   const topSummary = metrics.holders.slice(0, 15).map((h, i) => ({
     rank: i + 1,
     address: h.address,
@@ -1115,9 +909,14 @@ async function generateAiAnalysis(metrics: Metrics, marketData: MarketData): Pro
   const cgStatus = marketData.coingeckoListed
     ? `Listado (id: ${marketData.coingeckoId}, preço: $${marketData.coingeckoPriceUsd}, market cap: $${marketData.coingeckoMarketCap}, volume 24h: $${marketData.coingeckoVolume24h})`
     : "NÃO listado no CoinGecko";
-  const dexSummary = marketData.dexPairs.length
+  const dexPairsSummary = marketData.dexPairs.length
     ? marketData.dexPairs.map((p) => `${p.dex} (${p.quoteSymbol}): preço $${p.priceUsd.toExponential(2)}, liquidez $${p.liquidityUsd.toFixed(2)}, vol24h $${p.volume24h.toFixed(2)}, txns24h ${p.txns24h.buys}b/${p.txns24h.sells}s`).join(" | ")
-    : "Nenhum par DEX encontrado";
+    : "Nenhum par DEX no DexScreener";
+  const dexPoolsSummary = marketData.dexPools.length
+    ? `Pools on-chain (${marketData.dexPools.length}): ` +
+      marketData.dexPools.map((v) => `${v.dexName} ${v.pairLabel}`).join(", ")
+    : "";
+  const dexSummary = [dexPairsSummary, dexPoolsSummary].filter(Boolean).join(" · ");
 
   const prompt = `Você é um analista sênior de mercado cripto assessorando o admin/criador do token CAS (Polygon Mainnet, supply máximo 10.000.000, cunhado 1.000.000).
 O objetivo do admin é garantir que o CAS NÃO seja percebido como token fake ou de baixa qualidade por agregadores, exchanges e traders.
@@ -1144,52 +943,30 @@ Produza em português, formato HTML simples (apenas <h3>, <p>, <ul>, <li>, <stro
 4. <h3>Leitura para Traders/Investidores</h3> — o que um operador deve observar antes de operar CAS.
 Seja específico com os números fornecidos.`;
 
-  const FALLBACK_MODELS = [
-    "google/gemini-2.5-flash-lite",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "google/gemma-3-27b-it:free",
-    "deepseek/deepseek-r1:free",
-    "meta-llama/llama-3.2-3b-instruct:free",
-  ];
-  const modelsToTry = [model, ...FALLBACK_MODELS.filter((m) => m !== model)];
+  // Cadeia compartilhada: AI_MODEL → modelos :free do catálogo → Ollama
+  // local (melhor modelo primeiro) ao primeiro erro de crédito/cota.
+  // minContentChars rejeita respostas muito curtas para um relatório de
+  // 4 seções (modelos de raciocínio podem gastar o orçamento no thinking
+  // e devolver só uma fração da análise).
+  const result = await generateCompletion({
+    prompt,
+    maxTokens: 4096,
+    minContentChars: 800,
+    temperature: 0.3,
+    title: "CAS Distribution Dashboard",
+    log,
+  });
 
-  for (const tryModel of modelsToTry) {
-    log("INFO", "generateAiAnalysis", "Chamando OpenRouter", { model: tryModel });
-    try {
-      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": "https://agenticspace.rapport.tec.br",
-          "X-Title": "CAS Distribution Dashboard",
-        },
-        body: JSON.stringify({
-          model: tryModel,
-          messages: [{ role: "user", content: prompt }],
-          temperature: 0.3,
-          max_tokens: 1000,
-        }),
-      });
-      if (!res.ok) {
-        const errBody = await res.text();
-        throw new Error(`HTTP ${res.status}: ${errBody.slice(0, 200)}`);
-      }
-      const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-      const content = data.choices?.[0]?.message?.content?.trim();
-      if (!content) throw new Error("Resposta vazia do modelo");
-      log("OK", "generateAiAnalysis", "Análise GenAI recebida", { model: tryModel, chars: content.length });
-      return content.replace(/```html?|```/g, "");
-    } catch (err) {
-      log("WARN", "generateAiAnalysis", "Modelo falhou, tentando próximo", {
-        model: tryModel,
-        error: (err as Error).message,
-      });
-    }
+  if (result) {
+    const providerLabel = result.provider === "ollama" ? "Ollama (local)" : "OpenRouter";
+    // Modelos fine-tuned de saída estruturada respondem JSON em vez de
+    // HTML — converte para blocos h3/p antes de embutir no relatório.
+    const body = tryJsonToHtml(result.content) ?? result.content;
+    return `<p style="font-size:.75rem;color:var(--muted);margin-bottom:12px;">Gerado por <strong>${providerLabel}</strong> · modelo <code>${result.model}</code></p>${body}`;
   }
 
-  log("ERROR", "generateAiAnalysis", "Todos os modelos falharam");
-  return `<p><em>Falha ao gerar análise GenAI após tentar ${modelsToTry.length} modelos. Verifique AI_API_KEY e créditos no OpenRouter.</em></p>`;
+  log("ERROR", "generateAiAnalysis", "Todos os provedores GenAI falharam");
+  return "<p><em>Falha ao gerar análise GenAI: OpenRouter indisponível e nenhum modelo local do Ollama respondeu. Verifique AI_API_KEY/créditos ou rode <code>ollama pull &lt;modelo&gt;</code>.</em></p>";
 }
 
 // ── HTML dashboard ────────────────────────────────────────────────────
@@ -1214,12 +991,6 @@ function escapeHtml(text: string): string {
 function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marketData: MarketData, transfers: TokenTransfer[], signals: ManipulationSignal[], socialSnapshot: SentimentSnapshot | null, periodLabel?: string): string {
   const labels = knownLabels();
   const topN = metrics.holders.slice(0, 20);
-  const othersPct = Math.max(0, 100 - topN.reduce((s, h) => s + h.pct, 0));
-
-  const donutLabels = [...topN.map((h) => h.label || shortAddr(h.address)), "Outros"];
-  const donutData = [...topN.map((h) => Math.round(h.pct * 100) / 100), Math.round(othersPct * 100) / 100];
-  const donutObs = [...topN.map((h) => h.observation || ""), ""];
-  const barObs = topN.map((h) => h.observation || "");
 
   // ── CAS partners from airdrop / distribution CSV ──
   const bestPriceUsd = marketData.bestPair?.priceUsd ?? 0;
@@ -1300,10 +1071,12 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marke
 
   const typeCell = (type: string) => `${typeEmoji(type)} ${type}`;
 
-  const whaleRows = metrics.whales30.length
-    ? metrics.whales30
-        .map(
-          (w) => `<tr class="alert-row">
+  // Todas as linhas >= menor limiar do combobox são renderizadas com
+  // data-whale-pct; WHALE_FILTER_JS oculta as abaixo do corte escolhido.
+  const whaleCandidates = metrics.holders.filter((h) => h.pct >= whaleMinThreshold());
+  const whaleRows = whaleCandidates
+    .map(
+      (w) => `<tr class="alert-row" data-whale-pct="${w.pct}">
         <td>${polyScanLink(w.address, shortAddr(w.address))}</td>
         <td title="${escapeHtml(w.observation || "")}">${escapeHtml(w.label || shortAddr(w.address))}</td>
         <td>${fmt(toNum(w.balance))} CAS</td>
@@ -1312,9 +1085,9 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marke
         <td>${escapeHtml(w.asset || "—")}</td>
         <td>${w.isContractLike ? "🏛️ Infraestrutura" : "⚠️ Carteira externa"}</td>
       </tr>`,
-        )
-        .join("")
-    : `<tr><td colspan="7" style="text-align:center;color:#F05F40">✅ Nenhum holder externo acima de 30% do supply</td></tr>`;
+    )
+    .join("")
+    + `<tr data-whale-empty${whaleCandidates.length > 0 ? ' style="display:none"' : ""}><td colspan="7" style="text-align:center;color:#F05F40">✅ Nenhum holder acima do limiar selecionado</td></tr>`;
 
   const latestMovements = [...transfers]
     .sort((a, b) => Number(b.timeStamp) - Number(a.timeStamp))
@@ -1376,12 +1149,13 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marke
   <div class="kpi"><div class="v">$${marketData.coingeckoVolume24h != null ? fmt(marketData.coingeckoVolume24h, 0) : "—"}</div><div class="l">Volume 24h (CoinGecko)</div></div>`
     : `<div class="kpi"><div class="v">—</div><div class="l">CoinGecko: não listado</div></div>`;
 
+  const totalPairs = uniquePairCount(marketData.dexPairs, marketData.dexPools);
   const dexKpis = marketData.bestPair
     ? `<div class="kpi"><div class="v">$${bestPrice!.toExponential(2)}</div><div class="l">Preço <span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span> (USD)</div></div>
   <div class="kpi"><div class="v">$${fmt(totalDexLiquidity, 2)}</div><div class="l">Liquidez total <span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span> (USD)</div></div>
   <div class="kpi"><div class="v">$${fmt(totalDexVolume, 2)}</div><div class="l">Volume 24h <span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span> (USD)</div></div>
-  <div class="kpi"><div class="v">${marketData.dexPairs.length}</div><div class="l">Pares <span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span> ativos</div></div>`
-    : `<div class="kpi"><div class="v">—</div><div class="l"><span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span>: sem pares encontrados</div></div>`;
+  <div class="kpi"><div class="v">${totalPairs}</div><div class="l">Pares/pools <span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span> (DexScreener + on-chain)</div></div>`
+    : `<div class="kpi"><div class="v">${totalPairs > 0 ? totalPairs : "—"}</div><div class="l">${totalPairs > 0 ? "Pares/pools <span class=\"term-tip\" data-tip=\"Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.\">DEX</span> descobertos on-chain" : "<span class=\"term-tip\" data-tip=\"Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.\">DEX</span>: sem pares encontrados"}</div></div>`;
 
   const dexRows = marketData.dexPairs.length
     ? marketData.dexPairs
@@ -1396,7 +1170,9 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marke
       <td>$${p.fdv > 0 ? fmt(p.fdv, 0) : "—"}</td>
     </tr>`)
         .join("")
-    : `<tr><td colspan=\"7\" style=\"text-align:center;color:#712d23\">Nenhum par DEX encontrado no DexScreener</td></tr>`;
+    : `<tr><td colspan=\"7\" style=\"text-align:center;color:#712d23\">Nenhum par DEX encontrado no DexScreener${marketData.dexPools.length > 0 ? " — veja os pools descobertos on-chain abaixo" : ""}</td></tr>`;
+
+  // ── Pools DEX descobertos on-chain (pool_creations via syncPoolCreators) ──
 
   // ── Transfer graph data (for vis.js network) ──
   const holderBalanceMap = new Map<string, { balance: bigint; pct: number }>();
@@ -1495,7 +1271,70 @@ function buildHtml(metrics: Metrics, tokenAddress: string, aiHtml: string, marke
       return { from, to, value: edge.count, title: tooltip, width, color: edgeColor, highlight: edgeHighlight, volumeLabel };
     });
 
-  const graphDataJson = JSON.stringify({ nodes: graphNodes, edges: graphEdges });
+  const graphDataJson = safeJsonForScript({ nodes: graphNodes, edges: graphEdges });
+
+  // ── Pizzas de distribuição (compartilhadas com cas_graph_dashboard) ──
+  const anonNames = new Map<string, string>();
+  const anonFor = (addr: string): string | undefined => {
+    if (!anonMode) return undefined;
+    const lower = addr.toLowerCase();
+    if (!anonNames.has(lower)) anonNames.set(lower, `Anon ${anonNames.size + 1}`);
+    return anonNames.get(lower);
+  };
+
+  // ── Pools DEX descobertos on-chain (pool_creations via syncPoolCreators) ──
+  const poolCreatorCell = (addr: string): string => {
+    const lower = addr.toLowerCase();
+    const anon = anonFor(addr);
+    if (anon) return `<code>${escapeHtml(anon)}</code>`;
+    const display = labels.get(lower)?.label || shortAddr(addr);
+    return polyScanLink(addr, display);
+  };
+  const dexPoolRows = buildDexPoolRows(marketData.dexPools, poolCreatorCell);
+
+  // ── Saldos dos pools (lidos on-chain no main; [] = leitura indisponível) ──
+  const poolBalanceRows = buildPoolBalanceRows(marketData.poolBalances ?? []);
+
+  // Alertas por endereço para as fatias da pizza (score heurístico, sem GNN)
+  const nodeAlertMap = new Map<string, PieAlert[]>();
+  for (const s of signals) {
+    const alert: PieAlert = {
+      type: s.type,
+      severity: s.severity,
+      evidence: s.evidence,
+      addresses: s.addresses,
+      heuristicScore: severityToPct(s.severity),
+      gnnScore: 0,
+      combinedScore: severityToPct(s.severity),
+    };
+    for (const addr of s.addresses) {
+      const key = addr.toLowerCase();
+      const list = nodeAlertMap.get(key) ?? [];
+      list.push(alert);
+      nodeAlertMap.set(key, list);
+    }
+  }
+
+  const totalMovements = [...nodeStats.entries()]
+    .filter(([addr]) => addr !== ZERO)
+    .reduce((s, [, st]) => s + st.sent + st.received, 0);
+
+  const pieData = buildPieData(
+    transfers,
+    metrics.holders,
+    nodeStats,
+    labels,
+    anonFor,
+    nodeAlertMap,
+    holderBalanceMap,
+    totalMovements,
+  );
+  const pieDataJson = safeJsonForScript(pieData);
+
+  // ── Tooltips por linha da tabela de sinais de manipulação ──
+  const manipTooltipsJson = safeJsonForScript(
+    signals.map((s) => manipulationSignalTooltip(s, labels, anonFor)),
+  );
 
   // ── OHLC candlestick data (3 intervals: 30min, 8h, daily) ──
   const refPriceUsd = marketData.bestPair?.priceUsd ?? 0;
@@ -1627,6 +1466,9 @@ ${GRAPH_3D_CDN}
   .graph-legend { display:flex; gap:20px; margin-top:12px; flex-wrap:wrap; font-size:.85rem; color:var(--muted); }
   .graph-legend span { display:flex; align-items:center; gap:6px; }
   .graph-legend .dot { width:12px; height:12px; border-radius:50%; display:inline-block; }
+  .chart-wrap { position:relative; height:400px; }
+  .chart-wrap canvas { max-height:none; }
+  .term { cursor:help; text-decoration:underline dotted; }
   ${GRAPH_3D_CSS}
   .graph-search-bar { display:flex; gap:8px; align-items:center; margin-bottom:12px; }
   .graph-search-bar input { flex:1; padding:8px 14px; border-radius:8px; border:1px solid var(--border); background:rgba(255,255,255,0.05); color:var(--text); font-size:.9rem; outline:none; }
@@ -1678,7 +1520,6 @@ ${GRAPH_3D_CDN}
   <button class="tab-btn active" onclick="switchTab(event,'tab-overview')">📋 Visão Geral</button>
   <button class="tab-btn" onclick="switchTab(event,'tab-market')">💰 Mercado</button>
   <button class="tab-btn" onclick="switchTab(event,'tab-concentration')">🚨 Concentração</button>
-  <button class="tab-btn" onclick="switchTab(event,'tab-charts')">📊 Gráficos</button>
   <button class="tab-btn" onclick="switchTab(event,'tab-candlestick')">🕯️ Candlesticks</button>
   <button class="tab-btn" onclick="switchTab(event,'tab-holders')">🏆 Holders</button>
   <button class="tab-btn" onclick="switchTab(event,'tab-partners')">🤝 Parceiros</button>
@@ -1716,19 +1557,36 @@ ${GRAPH_3D_CDN}
     ${dexKpis}
   </div>
   <div class="card full">
+    <h3>Pares com dados de mercado (DexScreener)</h3>
     <table>
       <thead><tr><th><span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span></th><th>Quote</th><th>Preço (USD)</th><th>Liquidez (USD)</th><th>Volume 24h (USD)</th><th>Txns 24h (B/S)</th><th><span class="term-tip" data-tip="Fully Diluted Valuation — valor de mercado se todo o supply estivesse em circulação ao preço atual. Diferente do market cap, considera o supply máximo.">FDV</span> (USD)</th></tr></thead>
       <tbody>${dexRows}</tbody>
     </table>
   </div>
+  <div class="card full" style="margin-top:16px">
+    <h3>Pools <span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span> descobertos on-chain</h3>
+    <p style="font-size:.8rem;color:#f7d4ca;margin:4px 0 10px">Detectados via eventos de criação de pool (PairCreated/PoolCreated/Initialize) nas factories — mesmo procedimento do relatório de grafo. Inclui Uniswap V2/V3/V4, QuickSwap (V2 e V3/Algebra), SushiSwap, ApeSwap e Dfyn.</p>
+    <table>
+      <thead><tr><th><span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span></th><th>Par</th><th>Pool / PoolId</th><th>Criador</th><th>Criado em</th><th>Tx</th></tr></thead>
+      <tbody>${dexPoolRows}</tbody>
+    </table>
+  </div>
+  <h2 style="margin-top:28px">🏊 Saldos dos Pools <span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário. Liquidez em DEX é sinal de saúde do token.">DEX</span></h2>
+  <p class="sub">Saldos atuais lidos on-chain (balanceOf/getReserves, somente leitura) vs. liquidez inicial = contra-par do primeiro Mint após a criação do pool. <strong>Excesso</strong> = saldo do contra-par acima do depósito inicial. Pools <strong>Uniswap V4</strong> não têm contrato de pair: o saldo exibido é o agregado da moeda no PoolManager (todas as pools) e não é comparado com a liquidez inicial. O <strong>CASSwap Diamond</strong> usa POL nativo, não WPOL.</p>
+  <div class="card full">
+    <table id="pool-balances-table" class="sortable">
+      <thead><tr><th onclick="sortTable('pool-balances-table', 0, 'string')"><span class="term-tip" data-tip="Decentralized Exchange — exchange descentralizada onde tokens são negociados via pools de liquidez (AMM) sem intermediário.">DEX</span></th><th onclick="sortTable('pool-balances-table', 1, 'string')">Par</th><th>Pool / PoolId</th><th onclick="sortTable('pool-balances-table', 3, 'number')">Saldo CAS</th><th onclick="sortTable('pool-balances-table', 4, 'number')">Saldo Contra-par</th><th onclick="sortTable('pool-balances-table', 5, 'number')"><span class="term-tip" data-tip="Valor do contra-par depositado no primeiro Mint após a criação do pool — aproximação da liquidez usada para criar o par.">Liquidez inicial</span></th><th><span class="term-tip" data-tip="Excesso = saldo atual do contra-par acima da liquidez inicial; ok = dentro ou abaixo; n/a = sem baseline (V4 agregado, Diamond).">Status</span></th><th onclick="sortTable('pool-balances-table', 7, 'string')">Tipo</th></tr></thead>
+      <tbody>${poolBalanceRows}</tbody>
+    </table>
+  </div>
 </div>
 
 <div id="tab-concentration" class="tab-panel">
-  <h2>🚨 <span class="term-tip" data-tip="Whale — holder que possui mais de 30% do supply total. Carteiras externas (não-infra) nesse nível representam risco alto de manipulação de preço.">Whales</span> acima de 30% do supply</h2>
+  <h2>🚨 <span class="term-tip" data-tip="Whale — holder que possui uma fatia relevante do supply total. Carteiras externas (não-infra) em níveis altos representam risco de manipulação de preço.">Whales</span> acima de ${buildWhaleThresholdSelect("whale-threshold", { tableId: "whale-tbody", countId: "whale-count" })} do supply — <span id="whale-count">${whaleCandidates.length}</span> carteira(s)</h2>
   <div class="card full">
     <table>
       <thead><tr><th>Endereço</th><th>Rótulo</th><th>Saldo</th><th>% Supply</th><th>Tipo</th><th>Moeda</th><th>Classificação</th></tr></thead>
-      <tbody>${whaleRows}</tbody>
+      <tbody id="whale-tbody">${whaleRows}</tbody>
     </table>
   </div>
   <div class="card full" style="margin-top:16px">
@@ -1737,15 +1595,12 @@ ${GRAPH_3D_CDN}
     <p style="margin-top:6px"><strong><span class="term-tip" data-tip="Herfindahl-Hirschman Index — soma dos quadrados das participações percentuais (0–10000). Abaixo de 1500 = competitivo; acima de 2500 = altamente concentrado. Usado por reguladores para avaliar monopólio.">HHI</span>:</strong> ${fmt(metrics.hhi, 0)} (0–10000; &lt;1500 = competitivo, &gt;2500 = altamente concentrado)</p>
     <p style="margin-top:6px"><strong>Top 1:</strong> ${metrics.top1Pct.toFixed(2)}% · <strong>Top 5:</strong> ${metrics.top5Pct.toFixed(2)}% · <strong>Top 10:</strong> ${metrics.top10Pct.toFixed(2)}%</p>
   </div>
-</div>
-
-<div id="tab-charts" class="tab-panel">
-  <h2>📊 Gráficos de Distribuição</h2>
+  <h2 style="margin-top:28px">📊 Distribuição &amp; Atividade — passe o mouse nas fatias para detalhes</h2>
   <div class="grid">
-    <div class="card"><h3>Distribuição do Supply (Top 20 + Outros)</h3><canvas id="donut"></canvas></div>
-    <div class="card"><h3>Top 20 Holders (% do supply)</h3><canvas id="bars"></canvas></div>
-    <div class="card"><h3>Curva de <span class="term-tip" data-tip="Curva de Lorenz — visualiza a distribuição acumulada de riqueza. A distância entre a curva e a linha diagonal de igualdade perfeita indica o nível de concentração. Quanto maior a área entre as duas, maior a desigualdade.">Lorenz</span> (concentração)</h3><canvas id="lorenz"></canvas></div>
-    <div class="card"><h3>Atividade Diária (transferências e volume)</h3><canvas id="activity"></canvas></div>
+    <div class="card"><h3>Holders por saldo (% do supply)</h3><div class="chart-wrap"><canvas id="pie-holders"></canvas></div></div>
+    <div class="card"><h3>Maiores movimentadores (% das movimentações)</h3><div class="chart-wrap"><canvas id="pie-movers"></canvas></div></div>
+    <div class="card"><h3>Curva de <span class="term-tip" data-tip="Curva de Lorenz — visualiza a distribuição acumulada de riqueza. A distância entre a curva e a linha diagonal de igualdade perfeita indica o nível de concentração. Quanto maior a área entre as duas, maior a desigualdade.">Lorenz</span> (concentração)</h3><div class="chart-wrap"><canvas id="lorenz"></canvas></div></div>
+    <div class="card"><h3>Atividade Diária (transferências e volume)</h3><div class="chart-wrap"><canvas id="activity"></canvas></div></div>
   </div>
 </div>
 
@@ -1861,10 +1716,10 @@ ${GRAPH_3D_CDN}
     <div class="kpi"><div class="v">${socialSnapshot ? (socialSnapshot.negativeScore * 100).toFixed(0) + "%" : "—"}</div><div class="l">Negatividade social</div></div>
   </div>
   <div class="card full">
-    <h3>Sinais detectados</h3>
+    <h3>Sinais detectados <span style="font-weight:400;font-size:.8rem;color:var(--muted);">— passe o mouse sobre uma linha para ver o painel de detalhes</span></h3>
     <table id="manipulation-table" class="sortable">
       <thead><tr><th>Tipo</th><th>Severidade</th><th>Início</th><th>Fim</th><th>Endereços</th><th>Volume (CAS)</th><th>Txs</th><th>Evidência</th></tr></thead>
-      <tbody>${signals.length ? signals.map((s) => `<tr class="${s.severity === "ALTO" ? "alert-row" : ""}">
+      <tbody>${signals.length ? signals.map((s, sIdx) => `<tr class="${s.severity === "ALTO" ? "alert-row" : ""}" data-manip-idx="${sIdx}" style="cursor:help;">
         <td>${s.type}</td>
         <td>${s.severity}</td>
         <td>${s.start ? new Date(s.start * 1000).toLocaleString("pt-BR", { timeZone: "UTC" }) : "—"}</td>
@@ -1872,7 +1727,7 @@ ${GRAPH_3D_CDN}
         <td>${s.addresses.slice(0, 3).map((a) => polyScanLink(a, shortAddr(a))).join(", ")}${s.addresses.length > 3 ? ` +${s.addresses.length - 3}` : ""}</td>
         <td data-sort="${s.volumeCas}">${fmt(s.volumeCas)}</td>
         <td>${s.txCount}</td>
-        <td style="font-size:.8rem;max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${s.evidence.replace(/"/g, "&quot;")}">${s.evidence}</td>
+        <td style="font-size:.8rem;max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(s.evidence)}">${escapeHtml(s.evidence)}</td>
       </tr>`).join("") : `<tr><td colspan="8" style="text-align:center;color:#F05F40">Nenhum sinal detectado</td></tr>`}</tbody>
     </table>
   </div>
@@ -1885,7 +1740,7 @@ ${GRAPH_3D_CDN}
 </div>
 
 <div id="tab-ai" class="tab-panel">
-  <h2>🤖 Análise GenAI (OpenRouter)</h2>
+  <h2>🤖 Análise GenAI</h2>
   <div class="card full">${aiHtml}</div>
 </div>
 
@@ -1898,7 +1753,6 @@ ${GRAPH_3D_CDN}
     <label><input type="checkbox" class="print-tab-cb" value="tab-overview" checked> 📋 Visão Geral</label>
     <label><input type="checkbox" class="print-tab-cb" value="tab-market" checked> 💰 Mercado</label>
     <label><input type="checkbox" class="print-tab-cb" value="tab-concentration" checked> 🚨 Concentração</label>
-    <label><input type="checkbox" class="print-tab-cb" value="tab-charts" checked> 📊 Gráficos</label>
     <label><input type="checkbox" class="print-tab-cb" value="tab-candlestick" checked> 🕯️ Candlesticks</label>
     <label><input type="checkbox" class="print-tab-cb" value="tab-holders" checked> 🏆 Holders</label>
     <label><input type="checkbox" class="print-tab-cb" value="tab-partners" checked> 🤝 Parceiros</label>
@@ -1913,46 +1767,26 @@ ${GRAPH_3D_CDN}
 </div>
 
 <script>
-const donutLabels = ${JSON.stringify(donutLabels)};
-const donutData = ${JSON.stringify(donutData)};
-const barLabels = ${JSON.stringify(topN.map((h) => h.label || shortAddr(h.address)))};
-const barData = ${JSON.stringify(topN.map((h) => Math.round(h.pct * 100) / 100))};
-const barColors = ${JSON.stringify(topN.map((h) => (h.pct > 30 ? "#eb3812" : h.isContractLike ? "#cc7501" : "#F05F40")))};
-const donutObs = ${JSON.stringify(donutObs)};
-const barObs = ${JSON.stringify(barObs)};
 const lorenzData = ${JSON.stringify(lorenz.map((p) => ({ x: Math.round(p.x * 100) / 100, y: Math.round(p.y * 100) / 100 })))};
 const dailyLabels = ${JSON.stringify(metrics.dailySeries.map((d) => d.date))};
 const dailyCounts = ${JSON.stringify(metrics.dailySeries.map((d) => d.count))};
 const dailyVolumes = ${JSON.stringify(metrics.dailySeries.map((d) => d.volume))};
 const graphData = ${graphDataJson};
+const pieData = ${pieDataJson};
+const manipTooltips = ${manipTooltipsJson};
 
+// Chart.js indisponível (CDN offline/bloqueado): substitui cada canvas
+// por mensagem de fallback sem quebrar o restante do <script> (grafo 3D,
+// tooltips e abas continuam funcionais).
+if (typeof Chart === "undefined") {
+  ["pie-holders","pie-movers","lorenz","activity","candle30m","candle8h","candleDaily"].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.outerHTML = "<p style='color:#f7d4ca;font-size:.85rem;padding:12px;'>Chart.js indisponível — verifique a conexão com o CDN e recarregue.</p>";
+  });
+}
+if (typeof Chart !== "undefined") {
 Chart.defaults.color = "#f7d4ca";
 Chart.defaults.borderColor = "rgba(255,255,255,0.15)";
-const palette = ["#F05F40","#fcc650","#cc7501","#eb3812","#ce6e6d","#f7d4ca","#d4502e","#b5651d",
-                 "#fdd97a","#d9908f","#fae5df","#ff7a5c","#e89642","#ffd98a","#f54020","#c43d18",
-                 "#8a3a2c","#5d3a32","#eb6b4a","#e07a3a","#d49a5a"];
-
-new Chart(document.getElementById("donut"), {
-  type: "doughnut",
-  data: { labels: donutLabels, datasets: [{ data: donutData, backgroundColor: palette, borderWidth: 1, borderColor: "#712d23" }] },
-  options: { plugins: { legend: { position: "right", labels: { font: { size: 10 } } },
-    tooltip: { callbacks: { label: (c) => {
-      const obs = donutObs[c.dataIndex] || "";
-      return obs ? c.label + ": " + c.parsed + "% — " + obs : c.label + ": " + c.parsed + "%";
-    } } } } }
-});
-
-new Chart(document.getElementById("bars"), {
-  type: "bar",
-  data: { labels: barLabels, datasets: [{ label: "% do supply", data: barData, backgroundColor: barColors }] },
-  options: { indexAxis: "y", scales: { x: { title: { display: true, text: "% do supply" } } },
-    plugins: { legend: { display: false },
-      annotation: undefined,
-      tooltip: { callbacks: { label: (c) => {
-        const obs = barObs[c.dataIndex] || "";
-        return obs ? c.parsed.x + "% do supply — " + obs : c.parsed.x + "% do supply";
-      } } } } }
-});
 
 new Chart(document.getElementById("lorenz"), {
   type: "line",
@@ -1960,7 +1794,7 @@ new Chart(document.getElementById("lorenz"), {
     { label: "Lorenz (CAS)", data: lorenzData, borderColor: "#F05F40", backgroundColor: "rgba(240,95,64,.15)", fill: true, pointRadius: 0, tension: .2 },
     { label: "Igualdade perfeita", data: [{x:0,y:0},{x:100,y:100}], borderColor: "#712d23", borderDash: [6,4], pointRadius: 0 }
   ]},
-  options: { scales: {
+  options: { maintainAspectRatio: false, scales: {
       x: { type: "linear", min: 0, max: 100, title: { display: true, text: "% de holders (acumulado)" } },
       y: { min: 0, max: 100, title: { display: true, text: "% do supply (acumulado)" } } } }
 });
@@ -1970,7 +1804,7 @@ new Chart(document.getElementById("activity"), {
     { type: "bar", label: "Transferências", data: dailyCounts, backgroundColor: "#cc7501", yAxisID: "y" },
     { type: "line", label: "Volume (CAS)", data: dailyVolumes, borderColor: "#fcc650", yAxisID: "y1", tension: .3, pointRadius: 2 }
   ]},
-  options: { scales: {
+  options: { maintainAspectRatio: false, scales: {
       y: { position: "left", title: { display: true, text: "Transferências" } },
       y1: { position: "right", grid: { drawOnChartArea: false }, title: { display: true, text: "Volume CAS" } } } }
 });
@@ -2090,6 +1924,7 @@ function makeCandleChart(canvasId, data, yLabel) {
 makeCandleChart("candle30m", candle30mData, "Volume CAS (OHLC)");
 makeCandleChart("candle8h", candle8hData, "Volume CAS (OHLC)");
 makeCandleChart("candleDaily", candleDailyData, "Volume CAS (OHLC)");
+} // end if (typeof Chart !== "undefined")
 
 // ── Tab switching ──
 // _graph3d and _graph3dData are declared by GRAPH_3D_INIT_JS below
@@ -2112,6 +1947,9 @@ function switchTab(evt, tabId) {
   document.getElementById(tabId).classList.add('active');
   if (tabId === 'tab-graph') {
     setTimeout(() => {
+      // Dispara o init diferido imediatamente (o polling de visibilidade
+      // do GRAPH_3D_INIT_JS continua como fallback).
+      if (typeof window._graph3dEnsureInit === 'function') window._graph3dEnsureInit();
       var container = document.getElementById('network-graph');
       if (_graph3d && container) {
         _graph3d.width(container.clientWidth).height(container.clientHeight);
@@ -2143,6 +1981,9 @@ function doPrint() {
 
 // ── Transfer graph (3d-force-graph) ──
 ${GRAPH_3D_TOOLTIP_JS}
+${PIE_CHARTS_JS}
+${MANIP_TOOLTIP_BIND_JS}
+${WHALE_FILTER_JS}
 ${GRAPH_3D_INIT_JS}
 ${GRAPH_3D_SEARCH_JS}
 
@@ -2336,7 +2177,7 @@ async function main(): Promise<void> {
     log("OK", "main", "Transações carregadas do SQLite", { count: transfers.length });
 
     // Total supply still needs API or can be approximated from DB
-    if (process.env.POLYGONSCAN_API_KEY?.trim()) {
+    if (hasApiKey()) {
       try {
         totalSupply = await fetchTotalSupply(tokenAddress);
       } catch (err) {
@@ -2345,8 +2186,8 @@ async function main(): Promise<void> {
     }
   } else {
     // ── Mode: API sync + DB cache ──
-    if (!process.env.POLYGONSCAN_API_KEY?.trim()) {
-      log("ERROR", "main", "POLYGONSCAN_API_KEY ausente em smartcontracts/.env. Use --use-db para modo apenas banco.");
+    if (!hasApiKey()) {
+      log("ERROR", "main", "ETHERSCAN_API_KEY/POLYGONSCAN_API_KEY ausente em smartcontracts/.env. Use --use-db para modo apenas banco.");
       closeDB();
       process.exit(1);
     }
@@ -2354,7 +2195,7 @@ async function main(): Promise<void> {
     log("INFO", "main", "Sync incremental + totalSupply + dados de mercado concorrentemente");
 
     const [transfersResult, supplyResult, cgResult, dexResult] = await Promise.allSettled([
-      fetchAllTransfers(tokenAddress),
+      syncTransfers(tokenAddress),
       fetchTotalSupply(tokenAddress),
       fetchCoinGeckoStatus(tokenAddress),
       fetchDexScreenerData(tokenAddress),
@@ -2427,6 +2268,54 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // ── Pool creators on-chain (mesmo procedimento do analysis:cas:graph) ──
+  if (!useDbOnly && hasApiKey()) {
+    try {
+      await syncPoolCreators(tokenAddress);
+    } catch (err) {
+      log("WARN", "main", "Falha ao sincronizar pool creators (não bloqueia)", { error: (err as Error).message });
+    }
+  }
+  const dexPools = buildDexPoolViews(getPoolCreationsByToken(tokenAddress), tokenAddress, poolTokenLabels());
+  if (dexPools.length > 0) {
+    log("OK", "main", "Pools DEX carregados do banco", {
+      pools: dexPools.length,
+      dexes: [...new Set(dexPools.map((p) => p.dexName))].join(", "),
+    });
+  }
+
+  // ── Saldos atuais dos pools (eth_call read-only; alimenta a aba
+  // "Saldos dos Pools") — não bloqueia o dashboard se o RPC falhar. ──
+  let poolBalances: PoolBalance[] = [];
+  if (dexPools.length > 0) {
+    try {
+      // O CASSwap Diamond é venue de reserva (CAS/POL nativo), não entra
+      // em pool_creations — igual ao pool_monitor.py do AnaliseCAS.
+      const diamondView: DexPoolView = {
+        dexName: "CASSwap Diamond",
+        poolId: "0x80bd976cb588cd2f9ad9ac671fb19174e9f3172b",
+        isV4: false,
+        token0: tokenAddress,
+        token1: "0x0000000000000000000000000000000000000000",
+        pairLabel: "CAS/POL",
+        creator: "",
+        blockNumber: 0,
+        timestamp: 0,
+        txHash: "",
+      };
+      const hasDiamond = dexPools.some(
+        (p) => p.poolId.toLowerCase() === diamondView.poolId);
+      poolBalances = await fetchPoolBalances(
+        hasDiamond ? dexPools : [...dexPools, diamondView], tokenAddress);
+      log("OK", "main", "Saldos dos pools lidos on-chain", {
+        pools: poolBalances.length,
+        excesso: poolBalances.filter((p) => p.excess === "excesso").length,
+      });
+    } catch (err) {
+      log("WARN", "main", "Falha ao ler saldos dos pools (não bloqueia)", { error: (err as Error).message });
+    }
+  }
+
   // ── Process market data (already fetched concurrently in API mode) ──
   let marketData: MarketData;
   if (!useDbOnly && cgStatus && dexData) {
@@ -2440,6 +2329,7 @@ async function main(): Promise<void> {
       coingeckoVolume24h: cg?.volume24h ?? null,
       dexPairs: dex?.dexPairs ?? [],
       bestPair: dex?.bestPair ?? null,
+      dexPools,
     };
   } else {
     log("INFO", "main", "Buscando dados de mercado (CoinGecko + DexScreener)");
@@ -2455,11 +2345,15 @@ async function main(): Promise<void> {
       coingeckoVolume24h: cgResult.status === "fulfilled" ? cgResult.value.volume24h : null,
       dexPairs: dexResult.status === "fulfilled" ? dexResult.value.dexPairs : [],
       bestPair: dexResult.status === "fulfilled" ? dexResult.value.bestPair : null,
+      dexPools,
     };
   }
+  marketData.poolBalances = poolBalances;
   log("OK", "main", "Dados de mercado consolidados", {
     coingeckoListed: marketData.coingeckoListed,
     dexPairs: marketData.dexPairs.length,
+    dexPools: marketData.dexPools.length,
+    poolBalances: poolBalances.length,
     bestDex: marketData.bestPair?.dex,
   });
 

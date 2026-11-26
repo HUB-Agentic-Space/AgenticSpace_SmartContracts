@@ -4,7 +4,10 @@
  * Script especializado em visualização de grafos de transferências do
  * token CAS na Polygon Mainnet. Lê transferências do SQLite local ou
  * sincroniza via Etherscan V2 (multichain), calcula saldos/labels e gera
- * um HTML independente com o grafo 3D interativo (3d-force-graph / Three.js).
+ * um HTML independente com o grafo 3D interativo (3d-force-graph / Three.js)
+ * e gráficos de pizza (Chart.js) com a distribuição de holders por saldo
+ * e os maiores movimentadores de CAS — contas que somadas representam
+ * menos de ~10% são agrupadas na fatia "Outras contas".
  *
  * Uso:
  *   npm run analysis:cas:graph
@@ -71,6 +74,19 @@ import {
   GRAPH_3D_INIT_JS,
   GRAPH_3D_SEARCH_JS,
 } from "../utils/3d_graph_render";
+import {
+  PIE_CHARTS_JS,
+  alertColor,
+  buildPieData,
+  formatAlertsHtml,
+  formatTerm,
+  pctToSeverity,
+  safeJsonForScript,
+  severityRank,
+  severityToPct,
+  type PieAlert,
+  type PieData,
+} from "../utils/cas_report_charts";
 
 // ── Env loading ───────────────────────────────────────────────────────
 
@@ -113,16 +129,7 @@ interface Holder {
   isContractLike: boolean;
 }
 
-interface GraphAlert {
-  type: string;
-  severity: "ALTO" | "MODERADO" | "BAIXO";
-  evidence: string;
-  addresses: string[];
-  heuristicScore: number;
-  gnnScore: number;
-  combinedScore: number;
-  gnnKey?: string;
-}
+type GraphAlert = PieAlert;
 
 interface GraphNode {
   id: string;
@@ -313,60 +320,6 @@ function knownLabels(anonMode = false): Map<string, KnownAddress> {
 }
 
 // ── Graph alerts ──────────────────────────────────────────────────────
-
-const SEVERITY_RANK = { ALTO: 0, MODERADO: 1, BAIXO: 2 };
-
-function severityRank(s: "ALTO" | "MODERADO" | "BAIXO"): number {
-  return SEVERITY_RANK[s] ?? 99;
-}
-
-function alertColor(severity: "ALTO" | "MODERADO" | "BAIXO"): string {
-  return severity === "ALTO" ? "#eb3812" : severity === "MODERADO" ? "#F05F40" : "#cc7501";
-}
-
-function severityToPct(s: "ALTO" | "MODERADO" | "BAIXO"): number {
-  return s === "ALTO" ? 1.0 : s === "MODERADO" ? 0.6 : 0.3;
-}
-
-function pctToSeverity(pct: number): "ALTO" | "MODERADO" | "BAIXO" {
-  return pct >= 0.7 ? "ALTO" : pct >= 0.4 ? "MODERADO" : "BAIXO";
-}
-
-const TERM_LABELS: Record<string, { label: string; description: string }> = {
-  pump_episode: { label: "Episódio de Pump", description: "Evento de valorização artificial do preço para atrair compradores, comum em esquemas de pump-and-dump." },
-  dump_episode: { label: "Episódio de Dump", description: "Queda abrupta do preço após valorização artificial, indicando saída coordenada por grandes detentores." },
-  volume_spike: { label: "Pico de Volume", description: "Volume de negociação anormalmente alto em curto período, sinalizando possível manipulação de mercado." },
-  coordinated_cluster: { label: "Cluster Coordenado", description: "Grupo de endereços que transferem tokens entre si de forma sincronizada, sugerindo coordenação." },
-  spoofing_layering: { label: "Spoofing/Layering", description: "Ordens falsas colocadas e canceladas rapidamente para criar falsa impressão de oferta/demanda e enganar outros traders." },
-  lp_outflow: { label: "Saída de Liquidez (LP)", description: "Retirada expressiva de liquidez de pools, sinal de risco de rug pull." },
-  top10_concentration: { label: "Concentração Top 10", description: "Alta concentração da oferta nos 10 maiores endereços, aumentando o risco de manipulação por poucos agentes." },
-  wash_trading: { label: "Wash Trading", description: "Negociação entre contas controladas pela mesma parte para simular volume e enganar o mercado." },
-  whale_dump_pressure: { label: "Pressão de Venda de Baleias", description: "Grandes detentores (baleias) movimentando ativos para vendas massivas, pressionando o preço para baixo." },
-  rug_pull: { label: "Rug Pull", description: "Retirada fraudulenta de liquidez ou fundos por desenvolvedores/insiders, abandonando o projeto." },
-  short_and_distort: { label: "Short and Distort", description: "Venda a descoberto combinada à disseminação de notícias negativas para derrubar o preço." },
-};
-
-function formatTerm(code: string | undefined): string {
-  if (!code || !TERM_LABELS[code]) return code ?? "-";
-  const { label, description } = TERM_LABELS[code];
-  return `<span class="term" title="${description.replace(/"/g, "&quot;")}">${label}</span>`;
-}
-
-function formatAlertsHtml(alerts: GraphAlert[]): string {
-  if (alerts.length === 0) return "";
-  const sorted = [...alerts].sort((a, b) => {
-    const sev = severityRank(a.severity) - severityRank(b.severity);
-    if (sev !== 0) return sev;
-    return b.combinedScore - a.combinedScore;
-  });
-  const items = sorted
-    .map((a) => {
-      const icon = a.severity === "ALTO" ? "🚨" : a.severity === "MODERADO" ? "⚠️" : "ℹ️";
-      return `<li>${icon} <b style="color:${alertColor(a.severity)};">${formatTerm(a.type)}</b> (${a.severity}) — Combinado: ${(a.combinedScore * 100).toFixed(1)}%<br><span style="color:var(--muted);font-size:.75rem;">Heurística: ${(a.heuristicScore * 100).toFixed(1)}% · Neural Network: ${(a.gnnScore * 100).toFixed(1)}%${a.gnnKey ? ` · ${formatTerm(a.gnnKey)}` : ""}</span><br>${a.evidence}</li>`;
-    })
-    .join("");
-  return `<br><br><b style="color:#eb3812;">Alertas de manipulação detectados:</b><ul style="margin:4px 0;padding-left:16px;">${items}</ul>`;
-}
 
 function computeGraphAlerts(transfers: TokenTransfer[], tokenAddress: string, anonMode = false): GraphAlert[] {
   const labels = knownLabels(anonMode);
@@ -681,6 +634,7 @@ interface GraphData {
     depth: number;
   };
   alerts: GraphAlert[];
+  pie: PieData;
 }
 
 interface GnnDiagnosis {
@@ -1013,6 +967,21 @@ function buildGraphData(
     }
   }
 
+  const totalMovements = [...nodeStats.entries()]
+    .filter(([addr]) => addr !== ZERO)
+    .reduce((s, [, st]) => s + st.sent + st.received, 0);
+
+  const pie = buildPieData(
+    transfers,
+    holders,
+    nodeStats,
+    labels,
+    anonFor,
+    nodeAlertMap,
+    holderBalanceMap,
+    totalMovements,
+  );
+
   return {
     nodes,
     edges,
@@ -1025,6 +994,7 @@ function buildGraphData(
       depth,
     },
     alerts,
+    pie,
   };
 }
 
@@ -1142,7 +1112,8 @@ function diagnosisToHtml(d: GnnDiagnosis, graphAlerts: GraphAlert[]): string {
 
 function buildGraphHtml(graph: GraphData, tokenAddress: string, diagnosis?: GnnDiagnosis | null, periodLabel?: string): string {
   const diagnosisHtml = diagnosis ? diagnosisToHtml(diagnosis, graph.alerts) : "";
-  const graphDataJson = JSON.stringify({ nodes: graph.nodes, edges: graph.edges });
+  const graphDataJson = safeJsonForScript({ nodes: graph.nodes, edges: graph.edges });
+  const pieDataJson = safeJsonForScript(graph.pie);
 
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -1150,6 +1121,7 @@ function buildGraphHtml(graph: GraphData, tokenAddress: string, diagnosis?: GnnD
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CAS — Grafo 3D + Diagnóstico</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 ${GRAPH_3D_CDN}
 <style>
   :root { --bg:#222222; --card:#712d23; --border:rgba(255,255,255,0.15); --text:#ffffff; --muted:#f7d4ca; --accent:#F05F40; --gold:#fcc650; }
@@ -1172,8 +1144,15 @@ ${GRAPH_3D_CDN}
   .graph-legend { display:flex; gap:20px; margin-top:12px; flex-wrap:wrap; font-size:.85rem; color:var(--muted); }
   .graph-legend span { display:flex; align-items:center; gap:6px; }
   .graph-legend .dot { width:12px; height:12px; border-radius:50%; display:inline-block; }
+  .pie-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:16px; }
+  .pie-wrap { position:relative; height:400px; }
+  .pie-title { color:var(--gold); font-size:.95rem; margin-bottom:8px; }
   ${GRAPH_3D_CSS}
   .term { cursor:help; text-decoration:underline dotted; }
+  @media print {
+    .pie-wrap { height:280px !important; }
+    #vis-custom-tooltip { display:none !important; }
+  }
 </style>
 </head>
 <body>
@@ -1188,6 +1167,19 @@ ${GRAPH_3D_CDN}
 </div>
 
 ${diagnosisHtml}
+<div class="card" style="margin-bottom:16px;">
+  <h2 style="color:#fcc650;font-size:1.1rem;margin-bottom:12px;">🥧 Distribuição CAS</h2>
+  <div class="pie-grid">
+    <div>
+      <h3 class="pie-title">Holders por saldo (% do supply)</h3>
+      <div class="pie-wrap"><canvas id="pie-holders"></canvas></div>
+    </div>
+    <div>
+      <h3 class="pie-title">Maiores movimentadores (% das movimentações)</h3>
+      <div class="pie-wrap"><canvas id="pie-movers"></canvas></div>
+    </div>
+  </div>
+</div>
 <div class="card">
   <div class="graph-search-bar">
     <input type="text" id="graph-search-input" placeholder="Buscar por label ou endereço..." autocomplete="off" onkeydown="if(event.key==='Enter')searchGraph()" />
@@ -1222,8 +1214,12 @@ ${diagnosisHtml}
 
 <script>
 const graphData = ${graphDataJson};
+const pieData = ${pieDataJson};
 
 ${GRAPH_3D_TOOLTIP_JS}
+
+${PIE_CHARTS_JS}
+
 ${GRAPH_3D_INIT_JS}
 ${GRAPH_3D_SEARCH_JS}
 </script>

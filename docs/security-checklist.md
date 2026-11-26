@@ -145,6 +145,24 @@ nem aprovação de mainnet**.
 - [x] 2026-11-13 — Devin: `npm install` de dependências LZ revisado — `ethers@6.17.0` declarado explicitamente (versão 5.8.0 transitiva do `oapp-evm` fica aninhada); `ethers` do projeto não é alterado.
 - [x] 2026-11-13 — Devin: Solhint direcionado aos wrappers LZ sem erros/warnings (apenas rules desconhecidas na config, pre-existentes). Slither via `--compile-force-framework hardhat` (352 contratos, 102 detectores): **nenhum achado em `contracts/bridge/`**.
 - [ ] 2026-11-13 — Devin: verificação on-chain dos deploys reais (55/56) e do seed BinPool (58) — **pendente**; encoding `modifyLiquidities`/`BinAddLiquidityParams` validado contra `infinity-periphery-bsc-base`, mas execução real em mainnet ainda não ocorreu.
+=======
+---
+
+### Revisão adicional — uniswap-v4 CASInstallmentHook/Router (2026-11-26)
+
+| Campo | Valor |
+|-------|-------|
+| **Data** | 2026-11-26 |
+| **Responsável** | Devin (revisão interna — **não** é auditoria externa independente) |
+| **Contratos revisados** | `contracts/uniswap-v4/CASInstallmentHook.sol`, `contracts/uniswap-v4/CASInstallmentRouter.sol` |
+| **Baseline** | `origin/main` @ `f35e7bc` (escopo idêntico a `origin/release/cas-v2` @ `06e44f2`); issue #47; branch `fix/issue-47-audit-uniswap-v4` |
+| **Ferramentas executadas** | `npm run compile` (207 arquivos, solc 0.8.28, cancun, optimizer 200); `npm run cas:v4:test` (13/13 passando); `npx solhint` (0 erros, 9 warnings justificados); Slither (1 High FP, 1 Medium justificado, 2 Low justificados, 2 Info após correções); Mythril v0.24.8 com solc 0.8.28 (Hook: 0 issues com cobertura simbólica limitada; Router: 1 Low timestamp justificado) |
+| **Relatório detalhado** | `docs/secure-tests/2026-11-26-uniswap-v4/RUN-SUMMARY.md` + JSONs de evidência no mesmo diretório |
+| **Achados CRÍTICO** | 0 |
+| **Achados ALTO** | 0 efetivos (1 High Slither triado como falso positivo documentado — ver F-01 do run) |
+| **Achados MÉDIO** | 0 abertos (2 `uninitialized-local` corrigidos; 1 `unused-return` justificado) |
+| **Correções** | `permissions` com inicialização nomeada completa; `uint64 nextSale = 0;`; eventos quebrados para `max-line-length` |
+| **Pendências** | Echidna (sem harness para uniswap-v4 — `not_applicable`); fuzz/invariant Foundry (sem `.t.sol` — `not_run`); coverage formal; auditoria externa independente — **bloqueante para mainnet** |
 
 ## Legenda
 
@@ -836,6 +854,7 @@ não como banco público de documentos pessoais.
 
 | Data | Responsável | Contratos revisados | Alterações |
 |------|------------|---------------------|------------|
+| 2026-11-26 | Devin | CASInstallmentHook, CASInstallmentRouter (uniswap-v4) | Auditoria escopada (issue #47): compile OK, 13/13 testes, solhint 0 erros, Slither 0 High/Medium efetivos (FP e justificados documentados), Mythril 0 críticos. Correções: `permissions` nomeada completa, `nextSale = 0`, eventos multilinha. Evidência: `docs/secure-tests/2026-11-26-uniswap-v4/`. Pendências: echidna/fuzz, coverage, auditoria externa. |
 | 2026-11-13 | Devin | CASOFTAdapter, CASOFT (bridge LayerZero OFT) + scripts 55–58 | Wrappers mínimos sobre `oft-evm` auditado; 20 testes (OFT mock + binpool_math) passando; dry-run por padrão com flags dedicadas. Slither/auditoria externa **pendentes** antes de produção. |
 | 2026-09-19 | Devin | CASSwapUSDCPOLFacet, LibCASSwap, CASSwapStorage, ICASSwapUSDCPOL | Multi-ativo: BRLA + `swapExact`/`quoteSwap` genérico (12 direções, CAS pivot), `setAllSwapRatiosV2`, views `getCasRate`/`getReservesMulti`/`getBRLAToken`. 18 testes novos + 33 regressão passando. Slither/Mythril/Echidna **pendentes** antes do deploy do corte multi-ativo. |
 | 2026-09-17 | Devin | CASSwapUSDCPOLFacet, LibCASSwap, ICASSwapUSDCPOL, TraderGovernanceFacet | Fix da suíte CASSwap: 29 testes passando, colisão de seletores resolvida, slither direcionado sem HIGH/CRITICAL, Mythril sem achados. Echidna bloqueado por falta de Foundry no ambiente. |
