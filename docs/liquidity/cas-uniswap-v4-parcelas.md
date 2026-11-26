@@ -1,12 +1,21 @@
-# Revenda de 50% do saldo remanescente de um lote de CAS no Uniswap v4
+# Revenda de até 50% do saldo remanescente de um lote de CAS no Uniswap v4
 
-Uma compra em um dos cinco pools participantes entrega o CAS diretamente à carteira e abre um lote individual. A primeira venda fica disponível 24 horas após a compra. A cada venda, o hook calcula uma nova parcela sobre **o que resta naquele lote** e inicia outras 24 horas de espera. A carteira envia uma ordem quando quiser vender, a partir do horário permitido pelo timestamp do bloco.
+Uma compra em um dos cinco pools participantes entrega o CAS diretamente à carteira e abre um lote individual. Após 24 horas, a carteira escolhe quanto vender, até **50% do saldo atual daquele lote**. Cada venda que deixa saldo, mesmo pequena, inicia outras 24 horas de espera. O novo limite considera exatamente o que ficou no lote.
 
-Cada ordem deve vender o valor integral da parcela. Normalmente, é 50% do saldo atual. **Se vender a metade deixaria menos de 5 CAS no lote, a parcela passa a ser o saldo inteiro.** Com 10 CAS, a primeira venda é de 5 e ficam exatamente 5 para a próxima. Com 9 CAS, a próxima venda é dos 9. Um lote comprado ou registrado já com menos de 5 CAS também espera 24 horas antes de poder ser vendido por inteiro.
+**Exemplo de venda parcial.** Com 21.000 CAS, o primeiro teto é 10.500. Se a carteira vender 3.000 CAS na terça às 16h, ficam 18.000. A partir de quarta às 16h, poderá vender até 9.000. Se escolher vender 8.000, ficam 10.000 e o teto seguinte será 5.000 CAS.
+
+**Exceção para a última venda.** Se vender o máximo de 50% deixaria menos de 5 CAS, o titular pode quitar todo o lote. Uma venda parcial só é válida se deixar pelo menos 5 CAS. O primeiro intervalo de 24 horas também se aplica a um lote pequeno aberto por compra ou registro.
+
+| Saldo do lote | Escolhas em uma rodada liberada |
+| ---: | --- |
+| 10 CAS | Vender qualquer quantidade positiva até 5 CAS. Vendendo 5, ficam exatamente 5. |
+| 9 CAS | Vender até 4 CAS ou vender os 9. Por exemplo, uma ordem de 4,5 CAS deixaria o saldo abaixo do piso e reverte. |
+| 5 CAS | Vender os 5 CAS para encerrar. |
+| 4,5 CAS | Vender os 4,5 CAS para encerrar. |
 
 ## Exemplo com 21.000 CAS
 
-Se a carteira vender no primeiro instante permitido em todas as rodadas, cada linha abaixo corresponde a outro dia desde a compra.
+Esta é uma trajetória possível quando a carteira escolhe sempre o máximo, inclusive a quitação final. Se executar cada venda no primeiro instante permitido, cada linha corresponde a outro dia desde a compra. Vendas menores produzem uma sequência diferente.
 
 | Venda | CAS vendidos | CAS que ficam no lote |
 | ---: | ---: | ---: |
@@ -24,14 +33,16 @@ Se a carteira vender no primeiro instante permitido em todas as rodadas, cada li
 | 12 | 5,126953125 | 5,126953125 |
 | 13 | 5,126953125 | 0 |
 
-Na 12ª venda, a metade que fica ainda supera 5 CAS. Na 13ª, vender metade deixaria 2,5634765625 CAS, por isso a carteira vende os 5,126953125 inteiros. O contrato calcula em unidades de 10⁻¹⁸ CAS. Quando o saldo tem um número ímpar dessas unidades, a parcela vendida recebe a unidade excedente. A soma dos valores vendidos e do saldo restante sempre recompõe o lote original.
+Na 12ª venda, a metade que fica ainda supera 5 CAS. Na 13ª, vender metade deixaria 2,5634765625 CAS. A carteira pode vender os 5,126953125 inteiros ou fazer uma venda parcial de até 0,126953125 CAS para preservar o piso de 5.
+
+O contrato calcula em unidades de 10⁻¹⁸ CAS. Se o saldo tem um número ímpar dessas unidades, o teto de 50% arredonda para baixo e a unidade excedente fica no lote. Por exemplo, com 10 CAS menos uma unidade mínima, o teto é 5 CAS menos uma unidade e ainda ficam exatamente 5. Esse detalhe evita liberar a quitação um passo antes.
 
 O prazo pertence ao lote e vale entre os pools participantes. Por exemplo, quem comprar na segunda às 10h no CAS/USDC e fizer a primeira venda na terça às 16h no CAS/WPOL poderá fazer a segunda a partir de quarta às 16h, inclusive no CAS/BRLA. Esperar vários dias libera a próxima parcela. Cada compra posterior abre um lote com seu próprio relógio, então a carteira pode vender parcelas vencidas de lotes diferentes no mesmo dia.
 
 ## CAS existente ou recebido por transferência
 
 1. A carteira chama `hook.registerBalance(quantidade)`. O hook consulta `CAS.balanceOf`, desconta a quantidade já registrada e abre um lote. O registro dispensa aprovação e custódia.
-2. A partir de 24 horas, a carteira vende a primeira parcela pelo roteador. O identificador do lote está no evento `LotOpened`, junto do primeiro horário de venda.
+2. A partir de 24 horas, a carteira escolhe quanto vender pelo roteador, segundo os mesmos limites de uma compra. O identificador do lote está no evento `LotOpened`, junto do primeiro horário de venda.
 3. A transferência ERC-20 move o saldo. Os direitos de venda do titular anterior continuam vinculados ao endereço que os registrou. Uma carteira receptora sem lote precisa registrar o saldo e cumprir o prazo.
 4. Se o saldo ficar abaixo do total dos lotes pendentes, a carteira pode repor a diferença ou chamar `discardAllLots()` e registrar novamente o saldo disponível. O descarte é voluntário, invalida **todos os lotes pendentes daquela carteira** e não movimenta tokens. O novo registro inicia outra contagem.
 
@@ -57,14 +68,20 @@ O endereço do hook integra a `PoolKey`. Mudá-lo produz outro `PoolId`. O scrip
 - `CASInstallmentRouter` faz swaps diretos entre os dois ERC-20 de cada pool. O chamador paga e recebe a saída. O hook aceita apenas o roteador criado no construtor. Isso vincula o lote à carteira que negociou, inclusive quando ela é uma smart account. A interface do projeto deve enviar a ordem por esse endereço. Rotas genéricas do Universal Router, agregadores e o Quoter oficial não executam esse callback autenticado. Uma simulação pelo próprio roteador com `swap.staticCall` reproduz as checagens de saldo e aprovação.
 - As permissões v4 são `beforeInitialize` e `afterSwap` (bits inferiores `0x2040`). A carteira inicializadora pode criar os cinco sucessores. Os prazos, parcelas, roteador e lista de origens são fixados no deploy. A integração usa somente a interface ERC-20 do CAS.
 
-Uma ordem chama `router.swap(key, zeroForOne, amountSpecified, limit, lotId, deadline)`. Um valor negativo de `amountSpecified` fixa a entrada e exige saída mínima. Um valor positivo fixa a saída e limita a entrada. O roteador exige preenchimento integral. O CAS/USDC tem USDC como `currency0` e CAS como `currency1`.
+Uma ordem chama `router.swap(key, zeroForOne, amountSpecified, limit, lotId, deadline)`. Um valor negativo de `amountSpecified` fixa a entrada e exige saída mínima. Um valor positivo fixa a saída e limita a entrada. Quem escolhe vender 3.000 CAS pode enviar uma ordem de entrada fixa por 3.000. O roteador exige o preenchimento integral **da ordem escolhida pelo titular**. Na ordem de saída fixa, o hook verifica quanto CAS a troca efetivamente debita. O CAS/USDC tem USDC como `currency0` e CAS como `currency1`.
 
 | Ação no CAS/USDC | zeroForOne | amountSpecified | limit | lotId |
 | --- | --- | --- | --- | --- |
 | Comprar exatamente 21.000 CAS | `true` | `+21000 × 10¹⁸` | Máximo de USDC aceito, em unidades de 10⁻⁶ USDC | `0` |
-| Vender a primeira parcela de 10.500 CAS | `false` | `−10500 × 10¹⁸` | Mínimo de USDC aceito, em unidades de 10⁻⁶ USDC | ID de `LotOpened` |
+| Escolher vender 3.000 CAS de um lote com teto de 10.500 | `false` | `−3000 × 10¹⁸` | Mínimo de USDC aceito, em unidades de 10⁻⁶ USDC | ID de `LotOpened` |
 
-O usuário aprova o roteador no token de entrada para o máximo que aceita gastar e consulta `hook.lots(carteira, id)`. O frontend exibe `nextAmount` (quantidade exata a vender), `lastAmount` (saldo que ficará depois dessa venda) e `sellAfter` (primeiro instante autorizado). Se `nextAmount` for positivo e `lastAmount` for zero, a próxima venda encerra o lote. A carteira assina a ordem com seu próprio `deadline` em segundos Unix. Depois da execução, o evento `InstallmentSold` informa o horário da próxima venda, ou zero no encerramento. Preço e liquidez disponíveis no momento da ordem também condicionam a execução.
+O usuário aprova o roteador no token de entrada para o máximo que aceita gastar e consulta `hook.lots(carteira, id)`. O campo `nextAmount` informa o maior valor vendável e `lastAmount` o saldo que ficaria **se fosse vendido esse máximo**. A soma dos dois é o saldo atual. O campo `sellAfter` informa o primeiro instante permitido.
+
+- Se `lastAmount > 0`, a interface pode aceitar qualquer valor positivo até `nextAmount`.
+- Se `lastAmount == 0` e `nextAmount > 0`, a interface pode oferecer a quitação de `nextAmount`. Se esse saldo superar 5 CAS, também pode oferecer vendas parciais até `nextAmount − 5 CAS`.
+- Se os três campos vierem zerados, o lote está inativo.
+
+A carteira assina a ordem com seu próprio `deadline` em segundos Unix. O evento `InstallmentSold` registra a quantidade efetivamente vendida e o próximo horário de venda, ou zero no encerramento. Preço e liquidez disponíveis no momento da ordem também condicionam a execução.
 
 ## Preparação e deploy
 
