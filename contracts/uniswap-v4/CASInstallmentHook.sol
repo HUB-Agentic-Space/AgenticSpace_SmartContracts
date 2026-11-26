@@ -79,9 +79,13 @@ contract CASInstallmentHook {
 
     /// @notice Anuncia o ID do novo lote e a data da primeira venda. Pool zero indica registro de saldo externo.
     /// @dev Os campos indexed permitem filtrar os logs por carteira, lote ou pool ao ler o recibo da transação.
-    event LotOpened(address indexed wallet, uint256 indexed lotId, PoolId indexed pool, uint128 amount, uint64 sellAfter);
+    event LotOpened(
+        address indexed wallet, uint256 indexed lotId, PoolId indexed pool, uint128 amount, uint64 sellAfter
+    );
     /// @notice Informa o CAS efetivamente vendido. nextSale igual a zero indica o encerramento do lote.
-    event InstallmentSold(address indexed wallet, uint256 indexed lotId, PoolId indexed pool, uint128 amount, uint64 nextSale);
+    event InstallmentSold(
+        address indexed wallet, uint256 indexed lotId, PoolId indexed pool, uint128 amount, uint64 nextSale
+    );
     /// @notice Identifica até qual lote os direitos de venda foram descartados.
     event LotsDiscarded(address indexed wallet, uint256 throughLotId);
 
@@ -93,9 +97,24 @@ contract CASInstallmentHook {
         // As permissões começam como false em memory. O v4 lê os 14 bits inferiores do endereço do
         // hook para escolher seus callbacks. O script busca o endereço por CREATE2 e esta chamada
         // exige que ele tenha exatamente os bits de beforeInitialize e afterSwap.
-        Hooks.Permissions memory permissions;
-        permissions.beforeInitialize = true;
-        permissions.afterSwap = true;
+        // A inicialização nomeada de todos os campos documenta a intenção campo a campo e faz o
+        // compilador rejeitar este código se uma versão futura da struct incluir outro bit.
+        Hooks.Permissions memory permissions = Hooks.Permissions({
+            beforeInitialize: true,
+            afterInitialize: false,
+            beforeAddLiquidity: false,
+            afterAddLiquidity: false,
+            beforeRemoveLiquidity: false,
+            afterRemoveLiquidity: false,
+            beforeSwap: false,
+            afterSwap: true,
+            beforeDonate: false,
+            afterDonate: false,
+            beforeSwapReturnDelta: false,
+            afterSwapReturnDelta: false,
+            afterAddLiquidityReturnDelta: false,
+            afterRemoveLiquidityReturnDelta: false
+        });
         Hooks.validateHookPermissions(IHooks(address(this)), permissions);
         // code.length confirma a presença de código nos dois endereços de contrato. Também precisamos
         // de um responsável pela inicialização e de pelo menos um pool para o qual a regra fará sentido.
@@ -268,7 +287,7 @@ contract CASInstallmentHook {
         outstanding[wallet] = booked - amount;
         // nextSale começa em zero. Se esta era a última parcela, delete zera o registro e o zero
         // no evento comunica seu encerramento. O contador de IDs da carteira continua crescente.
-        uint64 nextSale;
+        uint64 nextSale = 0;
         if (remaining == 0) {
             delete _lots[wallet][id];
         } else {
