@@ -133,6 +133,24 @@ Responsável: Devin. Escopo: revisão inicial de prontidão; **não é auditoria
 - [x] 2026-11-01 — Devin: **deploy e agendamento realizados em mainnet.** ClaimVaultFacet `0x58E60E16F7d20Fdd7F960e6680F3671B2a0b0f78` (tx `0xf328218a99b811a9ba50a36b09c4f220ac86b3bdd046ebe710a4113837c0a374`); ClaimNFTFacet `0xED8e0d8364509aaaC0d0197158E3908BDB8Ca45D` (tx `0xd16268d70e9973cd855e480f3a86dd02b23f79f12c604f764e907ffb268a2367`); deployer `0x66682BBeD9e540017967692cCdd069fE5F833888`. Safe execTransaction tx `0x97a9ca8f5c87288d031a6364b1eebd2ad9d5fa7c15a54e9fe195bcf828020178` (nonce 19). operationId `0x4aa51e471289c2631eabf59eef9236d31723a15ba98cf33ad844aab5a4fd357b`, readyAt `2026-11-03T23:45:57Z`. Payload em `deployments/claim-facets-cut.json`. Execução automática agendada via `agenticspace-claim-facets-execute.timer` (23:50 UTC, retry 15min) — o script `54_execute` remove as units ao concluir. Batch: diamondCut (35 seletores) + `initClaimVault(0x1cdF56D75d5F3643BecB1Cb2F96cbEC26a43c73c)` + `initClaimNFT("Rapport Claim","RCLAIM",baseURI)` + `setClaimAssetSupport(CAS 0x5151A34EaC7bA08cd6B540b32cD30316218A2287)`.
 - [ ] Pós-execução (após 2026-11-03): verificação no PolygonScan, registro no `ContractRegistry`, monitoramento e atualização backend/frontend com os endereços confirmados — **pendente até a execução do timelock**.
 
+---
+
+### Revisão adicional — uniswap-v4 CASInstallmentHook/Router (2026-11-26)
+
+| Campo | Valor |
+|-------|-------|
+| **Data** | 2026-11-26 |
+| **Responsável** | Devin (revisão interna — **não** é auditoria externa independente) |
+| **Contratos revisados** | `contracts/uniswap-v4/CASInstallmentHook.sol`, `contracts/uniswap-v4/CASInstallmentRouter.sol` |
+| **Baseline** | `origin/main` @ `f35e7bc` (escopo idêntico a `origin/release/cas-v2` @ `06e44f2`); issue #47; branch `fix/issue-47-audit-uniswap-v4` |
+| **Ferramentas executadas** | `npm run compile` (207 arquivos, solc 0.8.28, cancun, optimizer 200); `npm run cas:v4:test` (13/13 passando); `npx solhint` (0 erros, 9 warnings justificados); Slither (1 High FP, 1 Medium justificado, 2 Low justificados, 2 Info após correções); Mythril v0.24.8 com solc 0.8.28 (Hook: 0 issues com cobertura simbólica limitada; Router: 1 Low timestamp justificado) |
+| **Relatório detalhado** | `docs/secure-tests/2026-11-26-uniswap-v4/RUN-SUMMARY.md` + JSONs de evidência no mesmo diretório |
+| **Achados CRÍTICO** | 0 |
+| **Achados ALTO** | 0 efetivos (1 High Slither triado como falso positivo documentado — ver F-01 do run) |
+| **Achados MÉDIO** | 0 abertos (2 `uninitialized-local` corrigidos; 1 `unused-return` justificado) |
+| **Correções** | `permissions` com inicialização nomeada completa; `uint64 nextSale = 0;`; eventos quebrados para `max-line-length` |
+| **Pendências** | Echidna (sem harness para uniswap-v4 — `not_applicable`); fuzz/invariant Foundry (sem `.t.sol` — `not_run`); coverage formal; auditoria externa independente — **bloqueante para mainnet** |
+
 ## Legenda
 
 - **[CRÍTICO]** pode causar perda de fundos, tomada do sistema ou fraude de identidade.
@@ -823,6 +841,7 @@ não como banco público de documentos pessoais.
 
 | Data | Responsável | Contratos revisados | Alterações |
 |------|------------|---------------------|------------|
+| 2026-11-26 | Devin | CASInstallmentHook, CASInstallmentRouter (uniswap-v4) | Auditoria escopada (issue #47): compile OK, 13/13 testes, solhint 0 erros, Slither 0 High/Medium efetivos (FP e justificados documentados), Mythril 0 críticos. Correções: `permissions` nomeada completa, `nextSale = 0`, eventos multilinha. Evidência: `docs/secure-tests/2026-11-26-uniswap-v4/`. Pendências: echidna/fuzz, coverage, auditoria externa. |
 | 2026-09-19 | Devin | CASSwapUSDCPOLFacet, LibCASSwap, CASSwapStorage, ICASSwapUSDCPOL | Multi-ativo: BRLA + `swapExact`/`quoteSwap` genérico (12 direções, CAS pivot), `setAllSwapRatiosV2`, views `getCasRate`/`getReservesMulti`/`getBRLAToken`. 18 testes novos + 33 regressão passando. Slither/Mythril/Echidna **pendentes** antes do deploy do corte multi-ativo. |
 | 2026-09-17 | Devin | CASSwapUSDCPOLFacet, LibCASSwap, ICASSwapUSDCPOL, TraderGovernanceFacet | Fix da suíte CASSwap: 29 testes passando, colisão de seletores resolvida, slither direcionado sem HIGH/CRITICAL, Mythril sem achados. Echidna bloqueado por falta de Foundry no ambiente. |
 | 2026-08-24 | Devin | 8 contratos (EIP-8004 Trust Layer + EIP-8183 AgentCommerceFacet + x402 Facilitator) | Revisão manual + verificação da suíte de testes (`Eip8004Eip8183X402.test.ts`, 14 passing). Itens marcados em Controle de Acesso, Autenticação/Assinaturas (EIP-712), Reentrância/CEI e Privacidade. Slither/Mythril/Echidna **não executados** — pendência registrada para pré-mainnet. |
