@@ -12,7 +12,7 @@
  * We sign the Safe transaction hash with SAFE_OWNER_PRIVATE_KEY and
  * call execTransaction directly.
  */
-import { ethers, upgrades } from "hardhat";
+import { ethers, upgrades, network } from "hardhat";
 
 const SAFE_ABI = [
   "function nonce() view returns (uint256)",
@@ -27,12 +27,64 @@ const CERT_ABI = [
   "function currentPhaseId() view returns (uint256)",
   "function totalCertificates() view returns (uint256)",
   "function phaseAdminFacet() view returns (address)",
-  "function getPhase(uint256) view returns (tuple(string name, bytes32 templateHash, uint256 minCasDeposit, uint256 startsAt, uint256 endsAt, uint256 minted, bool active, string skillsDescription, string instructions, uint256 extraFeeTypeId, uint256 tbaRebateBps, bool allowMultipleIssuance, uint256 maxPerRecipient, uint256 maxTotalSupply))",
+  "function phases(uint256) view returns (string name, bytes32 templateHash, uint256 minCasDeposit, uint256 startsAt, uint256 endsAt, uint256 minted, bool active, string skillsDescription, string instructions, uint256 extraFeeTypeId, uint256 tbaRebateBps, bool allowMultipleIssuance, uint256 maxPerRecipient, uint256 maxTotalSupply)",
 ];
 
 function normalizeKey(key: string): string {
   const trimmed = key.trim();
   return trimmed.startsWith("0x") ? trimmed : `0x${trimmed}`;
+}
+
+/// Proposes a Safe transaction to the Safe Transaction Service so the
+/// remaining owners can review, co-sign and execute it in the Safe UI.
+/// Signs `safeTxHash` with the owner wallet using eth_sign (v += 4), the
+/// signature scheme accepted by the service for off-chain proposals.
+async function safeProposeTransaction(
+  safe: ethers.Contract,
+  ownerWallet: ethers.Wallet,
+  safeAddress: string,
+  chainId: bigint,
+  to: string,
+  data: string,
+  nonceOverride?: bigint,
+): Promise<string> {
+  const nonce = nonceOverride ?? (await safe.nonce());
+  const operation = 0;
+  const safeTxHash = await safe.getTransactionHash(
+    to, 0n, data, operation, 0n, 0n, 0n,
+    ethers.ZeroAddress, ethers.ZeroAddress, nonce,
+  );
+
+  const raw = await ownerWallet.signMessage(ethers.getBytes(safeTxHash));
+  const sig = ethers.Signature.from(raw);
+  const signature = ethers.solidityPacked(
+    ["bytes32", "bytes32", "uint8"],
+    [sig.r, sig.s, sig.v + 4],
+  );
+
+  const base = `https://safe-transaction-polygon.safe.global/api/v1/safes/${safeAddress}/multisig-transactions/`;
+  const body = {
+    to, value: "0", data, operation,
+    gasToken: ethers.ZeroAddress,
+    safeTxGas: "0", baseGas: "0", gasPrice: "0",
+    refundReceiver: ethers.ZeroAddress,
+    nonce: nonce.toString(),
+    contractTransactionHash: safeTxHash,
+    sender: ownerWallet.address,
+    signature,
+    origin: "upgrade_rapport_certificate_mainnet.ts",
+  };
+  const resp = await fetch(base, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`Safe proposal failed (${resp.status}): ${text}`);
+  }
+  console.log(`  Proposed Safe tx (nonce ${nonce}): ${safeTxHash}`);
+  return safeTxHash;
 }
 
 async function safeExecTransaction(
@@ -105,6 +157,21 @@ async function safeExecTransaction(
 }
 
 async function main() {
+  // Fork smoke mode: CERTIFICATE_FORK_SMOKE=1 resets the local node onto a
+  // Polygon mainnet fork (config-time `forking` fails hardfork detection on
+  // this toolchain, so we fork at runtime like the smoke script does).
+  if (process.env.CERTIFICATE_FORK_SMOKE === "1") {
+    const forkUrl = process.env.POLYGON_RPC_URL?.trim();
+    if (!forkUrl) throw new Error("POLYGON_RPC_URL required for fork smoke");
+    const forkBlock = Number(process.env.CERTIFICATE_FORK_BLOCK ?? 96580593);
+    await network.provider.request({
+      method: "hardhat_reset",
+      params: [{ forking: { jsonRpcUrl: forkUrl, blockNumber: forkBlock } }],
+    });
+    console.log(`[fork-smoke] Fork pinned at block ${forkBlock}.`);
+    console.log("[fork-smoke] Local node reset onto Polygon mainnet fork.");
+  }
+
   const proxyAddress = process.env.RAPPORT_CERTIFICATE_ADDRESS?.trim();
   if (!proxyAddress) throw new Error("RAPPORT_CERTIFICATE_ADDRESS not set");
 
@@ -129,14 +196,25 @@ async function main() {
 
   // Verify the Safe
   const safe = new ethers.Contract(multisigAddress, SAFE_ABI, ethers.provider);
-  const threshold = await safe.getThreshold();
+  const threshold = Number(await safe.getThreshold());
   const owners = await safe.getOwners();
   console.log(`Safe threshold: ${threshold}`);
   console.log(`Safe owners: ${owners}`);
-  if (Number(threshold) !== 1) {
-    throw new Error(`Safe threshold is ${threshold}, expected 1`);
+  const ownerIsSigner = owners
+    .map((o: string) => o.toLowerCase())
+    .includes(ownerWallet.address.toLowerCase());
+  if (!ownerIsSigner) {
+    throw new Error(`Safe owner wallet ${ownerWallet.address} is not an owner of ${multisigAddress}`);
   }
-  if (owners[0].toLowerCase() !== ownerWallet.address.toLowerCase()) {
+  const proposeOnly = threshold !== 1;
+  if (proposeOnly) {
+    console.log(
+      `  Threshold ${threshold} > 1: executing deploy steps only; the Safe ` +
+      "transactions will be proposed to the Safe Transaction Service for " +
+      "co-signing by the remaining owners.",
+    );
+  }
+  if (threshold === 1 && owners[0].toLowerCase() !== ownerWallet.address.toLowerCase()) {
     throw new Error(`Safe owner mismatch: expected ${ownerWallet.address}, got ${owners[0]}`);
   }
 
@@ -200,7 +278,34 @@ async function main() {
     [newImplAddress, "0x"],
   );
   console.log(`  upgradeTo data: ${upgradeData}`);
-  const upgradeTxHash = await safeExecTransaction(
+  const setFacetData = new ethers.Interface(["function setPhaseAdminFacet(address)"]).encodeFunctionData(
+    "setPhaseAdminFacet",
+    [facetAddress],
+  );
+
+  let upgradeTxHash = "";
+  let setFacetTxHash = "";
+
+  if (proposeOnly) {
+    const network = await ethers.provider.getNetwork();
+    const currentNonce = await safe.nonce();
+    await safeProposeTransaction(
+      safe, ownerWallet, multisigAddress, network.chainId,
+      proxyAddress, upgradeData, currentNonce,
+    );
+    await safeProposeTransaction(
+      safe, ownerWallet, multisigAddress, network.chainId,
+      proxyAddress, setFacetData, currentNonce + 1n,
+    );
+    console.log("\n--- Steps 3-4 proposed. Awaiting co-signatures in the Safe UI ---");
+    console.log("  After execution of both txs, re-run with NEW_CERTIFICATE_IMPL_ADDRESS");
+    console.log("  and NEW_PHASE_ADMIN_FACET_ADDRESS set to verify state preservation.");
+    console.log(`  Proposed implementation: ${newImplAddress}`);
+    console.log(`  Proposed facet:          ${facetAddress}`);
+    return;
+  }
+
+  upgradeTxHash = await safeExecTransaction(
     safe,
     ownerWallet,
     proxyAddress,
@@ -220,12 +325,8 @@ async function main() {
 
   // Step 4: Set phase admin facet via Safe
   console.log("\n--- Step 4: Set PhaseAdminFacet address via Safe ---");
-  const setFacetData = new ethers.Interface(["function setPhaseAdminFacet(address)"]).encodeFunctionData(
-    "setPhaseAdminFacet",
-    [facetAddress],
-  );
   console.log(`  setPhaseAdminFacet data: ${setFacetData}`);
-  const setFacetTxHash = await safeExecTransaction(
+  setFacetTxHash = await safeExecTransaction(
     safe,
     ownerWallet,
     proxyAddress,
@@ -253,7 +354,7 @@ async function main() {
   }
 
   // Read phase 1 to verify struct compatibility
-  const phase1 = await certAfter.getPhase(1);
+  const phase1 = await certAfter.phases(1);
   console.log(`\n  Phase 1 name: ${phase1.name}`);
   console.log(`  Phase 1 minted: ${phase1.minted}`);
   console.log(`  Phase 1 active: ${phase1.active}`);

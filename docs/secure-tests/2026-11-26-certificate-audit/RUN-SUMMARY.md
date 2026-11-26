@@ -93,10 +93,32 @@ tags:
 - Deploy/mainnet: **blocked** — Slither/Mythril/Echidna/coverage e auditoria externa independente são pré-requisitos canônicos, além de multisig+timelock no upgrade.
 - Risco residual aceito (CERT-04) deve constar na documentação operacional do fluxo de depósito.
 
+## Upgrade mainnet (2026-11-26, autorizado pelo usuário)
+
+Exceção de gate aprovada pelo usuário: deploy executado sem Slither/Mythril/coverage
+e sem auditoria externa independente (segue como pendência de release).
+
+- Nova implementação `RapportCertificateUpgradeable`: `0x3Bc724e5d04618D79180Aa05eB5c950458c5de12` (verificado no Polygonscan)
+- Novo `RapportCertificatePhaseAdminFacet`: `0x3adE21A608f90F55e48a1A5DF8C89e3FCfd1F6E2` (verificado no Polygonscan)
+- Proxy (inalterado): `0x0D4d5F160E57ec707Fb6a2A84C53040a1E23FA55`
+- Safe `0x1743abe1A64DAB3c81e394adb4e3B56ef05F0D26` está em threshold **2-de-3**;
+  execução direta não foi possível com uma única chave. As transações foram
+  **propostas** ao Safe Transaction Service aguardando co-assinatura:
+  - nonce 20 `upgradeToAndCall` → safeTxHash `0x3f77faa059aeb8ac5f1657bc8bc5205ac9312c397f433e98ec4055449c108ef6`
+  - nonce 21 `setPhaseAdminFacet` → safeTxHash `0x442c5d9441923ae4b92fa4065346fb6aa68dfed7b49af72fc1f21171dc3cd2d5`
+- Estado pré-upgrade capturado: 11 fases, currentPhaseId 11, 12 certificados,
+  impl anterior `0xa3bdef8eb005343aabc96f7671213bfc7ff86732`.
+- Pós-execução: re-executar `scripts/upgrade_rapport_certificate_mainnet.ts` com
+  `NEW_CERTIFICATE_IMPL_ADDRESS` e `NEW_PHASE_ADMIN_FACET_ADDRESS` para verificar
+  preservação de estado.
+- `hardhat.config.ts` revertido — tentativas de fork Polygon seguem **blocked**
+  pela toolchain Hardhat/EDR (hardfork history desconhecido para chain 137).
+
 ## Changelog
 
 | Data | Versão | Descrição |
 |---|---|---|
 | 2026-11-26 | 0.1.0 | Run inicial da auditoria certificate (issue #49) |
+| 2026-11-26 | 0.2.0 | Deploy mainnet de impl+facet corrigidos; upgrade proposto à Safe 2-de-3 |
 
 ![footer](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=100&section=footer&animation=twinkling)
