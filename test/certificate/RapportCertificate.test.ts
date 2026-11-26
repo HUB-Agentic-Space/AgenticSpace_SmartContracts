@@ -603,6 +603,8 @@ describe("RapportCertificate (ERC-721 + ERC-6551)", function () {
           0,
           "Habilidades de apoio e comunidade",
           "Envie screenshots e código por e-mail",
+          0,
+          0,
         ),
       ).to.emit(certificate, "PhaseCreated");
       await certificate.activatePhase(2);
@@ -675,6 +677,8 @@ describe("RapportCertificate (ERC-721 + ERC-6551)", function () {
         0,
         "Habilidades avançadas",
         "Envie provas por e-mail",
+        0,
+        0,
       );
       await certificate.setPhasePrerequisites(2, [1]);
 
@@ -705,6 +709,8 @@ describe("RapportCertificate (ERC-721 + ERC-6551)", function () {
         0,
         "",
         "",
+        0,
+        0,
       );
       await certificate.setPhasePrerequisites(2, [1]);
       await certificate.activatePhase(2);
@@ -725,6 +731,47 @@ describe("RapportCertificate (ERC-721 + ERC-6551)", function () {
       ).to.be.revertedWithCustomError(certificate, "PhasePrerequisitesNotMet");
     });
 
+    it("does not count a revoked certificate toward prerequisites", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { certificate, casToken, issuer, user } = fixture;
+
+      const templateHash = ethers.keccak256(ethers.toUtf8Bytes("gated-revoked"));
+      await certificate.createPhase(
+        "Desafio Gated",
+        templateHash,
+        ethers.parseEther("100"),
+        0,
+        0,
+        "",
+        "",
+        0,
+        0,
+      );
+      await certificate.setPhasePrerequisites(2, [1]);
+      await certificate.activatePhase(2);
+
+      // User holds the phase-1 certificate, then it is revoked.
+      await mintDefault(fixture);
+      await certificate.revokeCertificate(
+        1,
+        ethers.keccak256(ethers.toUtf8Bytes("reason")),
+      );
+
+      const authorization = await buildAuthorization(certificate, user.address, {
+        phaseId: 2n,
+        casAmount: ethers.parseEther("100"),
+        seed: "gated-revoked",
+      });
+      const signature = await signAuthorization(certificate, issuer, authorization);
+      const certAddr = await certificate.getAddress();
+      await casToken.connect(user).transfer(certAddr, ethers.parseEther("100"));
+      await certificate.connect(user).depositCasForMint(2n);
+
+      await expect(
+        certificate.connect(user).mintCertificate(authorization, issuer.address, signature),
+      ).to.be.revertedWithCustomError(certificate, "PhasePrerequisitesNotMet");
+    });
+
     it("rejects cyclic prerequisite dependencies", async function () {
       const fixture = await loadFixture(deployFixture);
       const { certificate } = fixture;
@@ -732,8 +779,8 @@ describe("RapportCertificate (ERC-721 + ERC-6551)", function () {
       // Create phases 2 and 3.
       const hash2 = ethers.keccak256(ethers.toUtf8Bytes("c2"));
       const hash3 = ethers.keccak256(ethers.toUtf8Bytes("c3"));
-      await certificate.createPhase("C2", hash2, ethers.parseEther("10"), 0, 0, "", "");
-      await certificate.createPhase("C3", hash3, ethers.parseEther("10"), 0, 0, "", "");
+      await certificate.createPhase("C2", hash2, ethers.parseEther("10"), 0, 0, "", "", 0, 0);
+      await certificate.createPhase("C3", hash3, ethers.parseEther("10"), 0, 0, "", "", 0, 0);
 
       // 2 requires 1, 3 requires 2.
       await certificate.setPhasePrerequisites(2, [1]);
@@ -750,7 +797,7 @@ describe("RapportCertificate (ERC-721 + ERC-6551)", function () {
       const { certificate } = fixture;
 
       const hash2 = ethers.keccak256(ethers.toUtf8Bytes("self-test"));
-      await certificate.createPhase("SelfTest", hash2, ethers.parseEther("10"), 0, 0, "", "");
+      await certificate.createPhase("SelfTest", hash2, ethers.parseEther("10"), 0, 0, "", "", 0, 0);
 
       await expect(
         certificate.setPhasePrerequisites(2, [2]),
@@ -766,7 +813,7 @@ describe("RapportCertificate (ERC-721 + ERC-6551)", function () {
       const { certificate } = fixture;
 
       const hash2 = ethers.keccak256(ethers.toUtf8Bytes("meta-test"));
-      await certificate.createPhase("Meta", hash2, ethers.parseEther("10"), 0, 0, "", "");
+      await certificate.createPhase("Meta", hash2, ethers.parseEther("10"), 0, 0, "", "", 0, 0);
 
       await expect(
         certificate.updatePhaseMetadata(2, "New skills", "New instructions"),
@@ -783,8 +830,8 @@ describe("RapportCertificate (ERC-721 + ERC-6551)", function () {
 
       const hash2 = ethers.keccak256(ethers.toUtf8Bytes("parallel-2"));
       const hash3 = ethers.keccak256(ethers.toUtf8Bytes("parallel-3"));
-      await certificate.createPhase("P2", hash2, ethers.parseEther("10"), 0, 0, "", "");
-      await certificate.createPhase("P3", hash3, ethers.parseEther("10"), 0, 0, "", "");
+      await certificate.createPhase("P2", hash2, ethers.parseEther("10"), 0, 0, "", "", 0, 0);
+      await certificate.createPhase("P3", hash3, ethers.parseEther("10"), 0, 0, "", "", 0, 0);
 
       await certificate.activatePhase(2);
       await certificate.activatePhase(3);

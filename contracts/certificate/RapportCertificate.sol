@@ -589,7 +589,9 @@ contract RapportCertificate is
         // for all prerequisite phases before minting this challenge.
         uint256[] storage prereqs = phasePrerequisites[authorization.phaseId];
         for (uint256 i = 0; i < prereqs.length; i++) {
-            if (certificatesByRecipientAndPhase[authorization.recipient][prereqs[i]] == 0) {
+            uint256 prereqTokenId =
+                certificatesByRecipientAndPhase[authorization.recipient][prereqs[i]];
+            if (prereqTokenId == 0 || certificates[prereqTokenId].revoked) {
                 revert PhasePrerequisitesNotMet(authorization.phaseId, prereqs[i]);
             }
         }

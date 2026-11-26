@@ -225,6 +225,12 @@ contract RapportCertificatePhaseAdminFacet is
         uint256 visitedBitmap
     ) internal view returns (bool) {
         if (current == target) return true;
+        // The bitmap only tracks IDs 0-255; `1 << n` wraps to zero for
+        // n >= 256, so marking would silently fail and a cycle among high
+        // IDs could recurse until gas exhaustion. Skip detection for such
+        // IDs — termination is still guaranteed because each phase's
+        // prerequisite list is finite.
+        if (current >= 256) return false;
         if (visitedBitmap & (1 << current) != 0) return false;
         visitedBitmap |= (1 << current);
 

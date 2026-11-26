@@ -295,6 +295,54 @@ describe("RapportCertificateUpgradeable (UUPS)", function () {
     });
   });
 
+  describe("Challenge prerequisites", function () {
+    it("does not count a revoked certificate toward prerequisites", async function () {
+      const { certificate, phaseAdmin, casToken, issuer, user } = await loadFixture(
+        deployFixture,
+      );
+      await phaseAdmin.createPhase(
+        "P2",
+        ethers.keccak256(ethers.toUtf8Bytes("p2")),
+        ethers.parseEther("10"),
+        0,
+        0,
+        "",
+        "",
+        0,
+        0,
+      );
+      await phaseAdmin.setPhasePrerequisites(2, [1]);
+      await phaseAdmin.activatePhase(2);
+
+      const certAddr = await certificate.getAddress();
+      await casToken.connect(user).transfer(certAddr, MIN_CAS);
+      await certificate.connect(user).depositCasForMint(1n);
+      const authorization = await buildAuthorization(certificate, user.address, {});
+      const signature = await signAuthorization(certificate, issuer, authorization);
+      await certificate
+        .connect(user)
+        .mintCertificate(authorization, issuer.address, signature);
+
+      // Revoking the prerequisite certificate must lock phase 2 again.
+      await certificate.revokeCertificate(
+        1,
+        ethers.keccak256(ethers.toUtf8Bytes("reason")),
+      );
+
+      await casToken.connect(user).transfer(certAddr, ethers.parseEther("10"));
+      await certificate.connect(user).depositCasForMint(2n);
+      const auth2 = await buildAuthorization(certificate, user.address, {
+        phaseId: 2n,
+        casAmount: ethers.parseEther("10"),
+        seed: "p2",
+      });
+      const sig2 = await signAuthorization(certificate, issuer, auth2);
+      await expect(
+        certificate.connect(user).mintCertificate(auth2, issuer.address, sig2),
+      ).to.be.revertedWithCustomError(certificate, "PhasePrerequisitesNotMet");
+    });
+  });
+
   describe("UUPS upgrade", function () {
     it("should allow admin to upgrade", async function () {
       const { certificate, admin, casToken, registry, accountImplementation } =
@@ -318,6 +366,22 @@ describe("RapportCertificateUpgradeable (UUPS)", function () {
       await expect(
         upgrades.upgradeProxy(await certificate.getAddress(), V2),
       ).to.be.revertedWithCustomError(certificate, "AccessControlUnauthorizedAccount");
+    });
+  });
+
+  describe("ERC-5192 soulbound lock", function () {
+    it("emits Locked on mint and reports the token as locked", async function () {
+      const { certificate, casToken, issuer, user } = await loadFixture(deployFixture);
+      const certAddr = await certificate.getAddress();
+      await casToken.connect(user).transfer(certAddr, MIN_CAS);
+      await certificate.connect(user).depositCasForMint(1n);
+
+      const authorization = await buildAuthorization(certificate, user.address, {});
+      const signature = await signAuthorization(certificate, issuer, authorization);
+      await expect(
+        certificate.connect(user).mintCertificate(authorization, issuer.address, signature),
+      ).to.emit(certificate, "Locked").withArgs(1n);
+      expect(await certificate.locked(1n)).to.equal(true);
     });
   });
 
