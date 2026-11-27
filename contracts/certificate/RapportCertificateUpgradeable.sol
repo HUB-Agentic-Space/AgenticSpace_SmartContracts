@@ -311,7 +311,9 @@ contract RapportCertificateUpgradeable is
 
         uint256[] storage prereqs = phasePrerequisites[authorization.phaseId];
         for (uint256 i = 0; i < prereqs.length; i++) {
-            if (certificatesByRecipientAndPhase[authorization.recipient][prereqs[i]] == 0) {
+            uint256 prereqTokenId =
+                certificatesByRecipientAndPhase[authorization.recipient][prereqs[i]];
+            if (prereqTokenId == 0 || certificates[prereqTokenId].revoked) {
                 revert PhasePrerequisitesNotMet(authorization.phaseId, prereqs[i]);
             }
         }
@@ -433,6 +435,7 @@ contract RapportCertificateUpgradeable is
             revert CasDepositMismatch(expectedBalance, finalBalance);
         }
 
+        emit Locked(tokenId);
         emit CertificateMinted(
             tokenId,
             authorization.phaseId,
