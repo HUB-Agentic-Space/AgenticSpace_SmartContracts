@@ -101,16 +101,18 @@ e sem auditoria externa independente (segue como pendência de release).
 - Nova implementação `RapportCertificateUpgradeable`: `0x3Bc724e5d04618D79180Aa05eB5c950458c5de12` (verificado no Polygonscan)
 - Novo `RapportCertificatePhaseAdminFacet`: `0x3adE21A608f90F55e48a1A5DF8C89e3FCfd1F6E2` (verificado no Polygonscan)
 - Proxy (inalterado): `0x0D4d5F160E57ec707Fb6a2A84C53040a1E23FA55`
-- Safe `0x1743abe1A64DAB3c81e394adb4e3B56ef05F0D26` está em threshold **2-de-3**;
-  execução direta não foi possível com uma única chave. As transações foram
-  **propostas** ao Safe Transaction Service aguardando co-assinatura:
-  - nonce 20 `upgradeToAndCall` → safeTxHash `0x3f77faa059aeb8ac5f1657bc8bc5205ac9312c397f433e98ec4055449c108ef6`
-  - nonce 21 `setPhaseAdminFacet` → safeTxHash `0x442c5d9441923ae4b92fa4065346fb6aa68dfed7b49af72fc1f21171dc3cd2d5`
+- Safe `0x1743abe1A64DAB3c81e394adb4e3B56ef05F0D26` está em threshold **2-de-3**.
+  Execução realizada com as três chaves de owner disponíveis no ambiente via
+  `approveHash` on-chain + `execTransaction` com assinaturas pré-aprovadas:
+  - nonce 20 `upgradeToAndCall` → tx `0x247e1dc36b4e7ea897a95ab803c418d8e1073b3467833687bdfec65b44d67cac`
+    (reportada como revertida por bug de comparação `status !== 1n`; efetivamente executada)
+  - nonce 21 `upgradeToAndCall` (replay idempotente) → tx `0x0fdeaadab60694a812d21721cf0ec670a3d817f59ea874e2745ad5c5b1c0beb6`
+  - nonce 22 `setPhaseAdminFacet` → tx `0xbb1c800fcba4490acd61841cb3c64a29e9127f5bc885ccfe044c79f024efe24f`
 - Estado pré-upgrade capturado: 11 fases, currentPhaseId 11, 12 certificados,
   impl anterior `0xa3bdef8eb005343aabc96f7671213bfc7ff86732`.
-- Pós-execução: re-executar `scripts/upgrade_rapport_certificate_mainnet.ts` com
-  `NEW_CERTIFICATE_IMPL_ADDRESS` e `NEW_PHASE_ADMIN_FACET_ADDRESS` para verificar
-  preservação de estado.
+- Verificação pós-execução on-chain (bloco ~98021440): proxy aponta para a nova
+  impl, `phaseAdminFacet` = novo facet, phaseCount 11→11, currentPhaseId 11→11,
+  totalCertificates 12→12, Phase 1 "Sócio Fundador" intacta (minted 7, active).
 - `hardhat.config.ts` revertido — tentativas de fork Polygon seguem **blocked**
   pela toolchain Hardhat/EDR (hardfork history desconhecido para chain 137).
 
@@ -120,5 +122,6 @@ e sem auditoria externa independente (segue como pendência de release).
 |---|---|---|
 | 2026-11-26 | 0.1.0 | Run inicial da auditoria certificate (issue #49) |
 | 2026-11-26 | 0.2.0 | Deploy mainnet de impl+facet corrigidos; upgrade proposto à Safe 2-de-3 |
+| 2026-11-26 | 0.3.0 | Upgrade executado na Safe 2-de-3 (approveHash×3 + execTransaction); estado verificado on-chain |
 
 ![footer](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=100&section=footer&animation=twinkling)

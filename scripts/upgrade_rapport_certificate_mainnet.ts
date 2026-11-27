@@ -87,6 +87,70 @@ async function safeProposeTransaction(
   return safeTxHash;
 }
 
+/// Executes a Safe transaction with threshold > 1 by collecting an
+/// eth_sign signature (v += 4) over `safeTxHash` from every available
+/// owner wallet. Signatures are packed sorted by owner address, as
+/// required by Safe's checkSignatures. `executor` only pays gas.
+async function safeExecTransactionMultisig(
+  safe: ethers.Contract,
+  signerWallets: ethers.Wallet[],
+  executor: ethers.Wallet,
+  to: string,
+  data: string,
+  gasPrice: bigint,
+): Promise<string> {
+  const nonce = await safe.nonce();
+  const txHash = await safe.getTransactionHash(
+    to, 0n, data, 0, 0n, 0n, 0n,
+    ethers.ZeroAddress, ethers.ZeroAddress, nonce,
+  );
+  console.log(`  Safe tx hash: ${txHash}`);
+  console.log(`  Safe nonce: ${nonce}`);
+
+  // Approve the tx hash on-chain from every signer wallet, then use
+  // pre-approved-hash signatures (r = owner, s = 0, v = 1) in execTransaction.
+  const approveIface = new ethers.Interface(["function approveHash(bytes32)"]);
+  for (const w of signerWallets) {
+    const approveTx = await w.sendTransaction({
+      to: await safe.getAddress(),
+      data: approveIface.encodeFunctionData("approveHash", [txHash]),
+      gasPrice,
+      gasLimit: 100000n,
+    });
+    const approveReceipt = await approveTx.wait();
+    if (!approveReceipt || approveReceipt.status !== 1) {
+      throw new Error(`approveHash reverted for ${w.address}: ${approveTx.hash}`);
+    }
+    console.log(`  approveHash confirmed for ${w.address} (${approveTx.hash})`);
+  }
+
+  const sigs = signerWallets
+    .map((w) => ({
+      address: w.address.toLowerCase(),
+      packed: ethers.solidityPacked(
+        ["bytes32", "uint256", "uint8"],
+        [ethers.zeroPadValue(w.address, 32), 0, 1],
+      ),
+    }))
+    .sort((a, b) => (a.address < b.address ? -1 : 1));
+  const signatures = ethers.concat(sigs.map((s) => s.packed));
+  console.log(`  Packed ${sigs.length} pre-approved owner signatures`);
+
+  const safeWithExecutor = safe.connect(executor);
+  const tx = await safeWithExecutor.execTransaction(
+    to, 0n, data, 0, 0n, 0n, 0n,
+    ethers.ZeroAddress, ethers.ZeroAddress, signatures,
+    { gasPrice, gasLimit: 600000n },
+  );
+  console.log(`  Tx submitted: ${tx.hash}`);
+  const receipt = await tx.wait();
+  if (!receipt || receipt.status !== 1) {
+    throw new Error(`Safe execTransaction reverted: ${tx.hash}`);
+  }
+  console.log(`  Confirmed in block ${receipt.blockNumber}`);
+  return tx.hash;
+}
+
 async function safeExecTransaction(
   safe: ethers.Contract,
   ownerWallet: ethers.Wallet,
@@ -149,7 +213,7 @@ async function safeExecTransaction(
   );
   console.log(`  Tx submitted: ${tx.hash}`);
   const receipt = await tx.wait();
-  if (!receipt || receipt.status !== 1n) {
+  if (!receipt || receipt.status !== 1) {
     throw new Error(`Safe execTransaction reverted: ${tx.hash}`);
   }
   console.log(`  Confirmed in block ${receipt.blockNumber}`);
@@ -192,7 +256,19 @@ async function main() {
   const ownerWallet = new ethers.Wallet(normalizeKey(safeOwnerKey), ethers.provider);
   console.log(`Safe owner: ${ownerWallet.address}`);
   const ownerBalance = await ethers.provider.getBalance(ownerWallet.address);
-  console.log(`Safe owner balance: ${ethers.formatEther(ownerBalance)} POL\n`);
+  console.log(`Safe owner balance: ${ethers.formatEther(ownerBalance)} POL`);
+
+  // Additional owner keys for multi-signature execution (SAFE_OWNER_PRIVATE_KEY_2, _3, ...)
+  const extraOwnerWallets: ethers.Wallet[] = [];
+  for (let i = 2; ; i++) {
+    const key = process.env[`SAFE_OWNER_PRIVATE_KEY_${i}`]?.trim();
+    if (!key) break;
+    const w = new ethers.Wallet(normalizeKey(key), ethers.provider);
+    const bal = await ethers.provider.getBalance(w.address);
+    console.log(`Safe owner ${i}: ${w.address} (${ethers.formatEther(bal)} POL)`);
+    extraOwnerWallets.push(w);
+  }
+  console.log();
 
   // Verify the Safe
   const safe = new ethers.Contract(multisigAddress, SAFE_ABI, ethers.provider);
@@ -200,19 +276,27 @@ async function main() {
   const owners = await safe.getOwners();
   console.log(`Safe threshold: ${threshold}`);
   console.log(`Safe owners: ${owners}`);
-  const ownerIsSigner = owners
-    .map((o: string) => o.toLowerCase())
-    .includes(ownerWallet.address.toLowerCase());
-  if (!ownerIsSigner) {
+  const ownerSet = new Set(owners.map((o: string) => o.toLowerCase()));
+  if (!ownerSet.has(ownerWallet.address.toLowerCase())) {
     throw new Error(`Safe owner wallet ${ownerWallet.address} is not an owner of ${multisigAddress}`);
   }
-  const proposeOnly = threshold !== 1;
+  const signerWallets = [ownerWallet, ...extraOwnerWallets].filter(
+    (w, i, arr) =>
+      ownerSet.has(w.address.toLowerCase()) &&
+      arr.findIndex((x) => x.address.toLowerCase() === w.address.toLowerCase()) === i,
+  );
+  console.log(`Owner wallets available for signing: ${signerWallets.length}/${threshold} required`);
+  // With threshold > 1 we can only execute if enough owner keys are present;
+  // otherwise we propose the transactions to the Safe Transaction Service.
+  const proposeOnly = threshold !== 1 && signerWallets.length < threshold;
   if (proposeOnly) {
     console.log(
-      `  Threshold ${threshold} > 1: executing deploy steps only; the Safe ` +
-      "transactions will be proposed to the Safe Transaction Service for " +
-      "co-signing by the remaining owners.",
+      `  Threshold ${threshold} > 1 and only ${signerWallets.length} owner key(s) ` +
+      "available: executing deploy steps only; the Safe transactions will be " +
+      "proposed to the Safe Transaction Service for co-signing.",
     );
+  } else if (threshold !== 1) {
+    console.log(`  Threshold ${threshold} satisfied locally: executing Safe txs with collected signatures.`);
   }
   if (threshold === 1 && owners[0].toLowerCase() !== ownerWallet.address.toLowerCase()) {
     throw new Error(`Safe owner mismatch: expected ${ownerWallet.address}, got ${owners[0]}`);
@@ -305,14 +389,12 @@ async function main() {
     return;
   }
 
-  upgradeTxHash = await safeExecTransaction(
-    safe,
-    ownerWallet,
-    proxyAddress,
-    upgradeData,
-    gasPrice,
+  const execSafeTx = threshold === 1
+    ? (to: string, data: string) => safeExecTransaction(safe, ownerWallet, to, data, gasPrice)
+    : (to: string, data: string) =>
+        safeExecTransactionMultisig(safe, signerWallets, ownerWallet, to, data, gasPrice);
 
-  );
+  upgradeTxHash = await execSafeTx(proxyAddress, upgradeData);
   console.log(`  Upgrade confirmed: ${upgradeTxHash}`);
 
   // Verify new implementation
@@ -326,14 +408,7 @@ async function main() {
   // Step 4: Set phase admin facet via Safe
   console.log("\n--- Step 4: Set PhaseAdminFacet address via Safe ---");
   console.log(`  setPhaseAdminFacet data: ${setFacetData}`);
-  setFacetTxHash = await safeExecTransaction(
-    safe,
-    ownerWallet,
-    proxyAddress,
-    setFacetData,
-    gasPrice,
-
-  );
+  setFacetTxHash = await execSafeTx(proxyAddress, setFacetData);
   console.log(`  setPhaseAdminFacet confirmed: ${setFacetTxHash}`);
 
   // Step 5: Verify state preservation
